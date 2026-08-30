@@ -208,6 +208,12 @@ The four principal status dimensions are `recovery_status`, `fuel_status`,
 Run commands from `proj/`.
 
 ```bash
+# Create and activate the Conda environment
+conda create --name carrier-aircraft-scheduling --override-channels \
+  --channel conda-forge python=3.12 pip -y
+conda activate carrier-aircraft-scheduling
+python -m pip install -r requirements.txt
+
 # Heuristic baseline
 python -m scripts.solve
 python -m scripts.solve --solver heuristic --runs 10 --wave-interval 60 --simulation-duration 720

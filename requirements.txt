@@ -2,4 +2,5 @@
 tqdm>=4.0
 
 # RL training and inference.
+numpy>=1.26
 torch>=2.0

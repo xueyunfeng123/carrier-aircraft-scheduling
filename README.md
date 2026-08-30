@@ -166,9 +166,30 @@ Reward = -α·Δt               （时间惩罚，α=1.0）
 `env/` 只负责定义问题和推进状态；`solution/` 负责根据环境状态选择动作；
 `rl/` 只包含强化学习组件；可执行入口统一放在 `scripts/`。
 
+## 环境配置
+
+项目使用 Python 3.12，推荐使用 Conda：
+
+```bash
+conda create \
+    --name carrier-aircraft-scheduling \
+    --override-channels \
+    --channel conda-forge \
+    python=3.12 pip -y
+conda activate carrier-aircraft-scheduling
+python -m pip install -r requirements.txt
+```
+
+也可以通过 `environment.yml` 创建：
+
+```bash
+conda env create --file environment.yml
+conda activate carrier-aircraft-scheduling
+```
+
 ## 运行
 
-从项目根目录执行：
+激活环境后，从项目根目录执行：
 
 ```bash
 # 默认启发式求解
