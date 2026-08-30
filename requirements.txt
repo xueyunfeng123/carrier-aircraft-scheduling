@@ -1,4 +1,5 @@
-# Core heuristic/random solvers have no third-party runtime dependencies.
-#
-# RL training and `--solver rl` require PyTorch:
+# Legacy random-policy progress display.
+tqdm>=4.0
+
+# RL training and inference.
 torch>=2.0

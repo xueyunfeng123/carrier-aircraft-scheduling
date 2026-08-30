@@ -24,7 +24,7 @@ from rl.obs_encoder import (
 from rl.ppo_trainer import PPOTrainer
 from rl.rollout_buffer import RolloutBuffer
 from rl.train_config import PPOConfig
-from solve import build_config, run_episode
+from scripts.solve import build_config, run_episode
 
 
 def main() -> None:

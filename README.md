@@ -1,6 +1,7 @@
-# 航母飞行调度强化学习环境
+# 舰载机多波次调度
 
-基于事件驱动的航母舰载机回收、加油、挂弹、放飞强化学习调度环境。
+基于离散事件仿真的舰载机回收、整备与放飞调度项目，包含随机策略、
+启发式策略、采样规划和强化学习求解器。
 
 ---
 
@@ -12,8 +13,8 @@
 放飞 → 升空执行任务 → 回收 → 加油 ‖ 挂弹 → 再次放飞
 ```
 
-**优化目标**：在固定的 `simulation_duration`（默认 720 时间单位）内，最大化
-完成的放飞架次，最小化错失架次（missed sorties）。
+**优化目标**：在固定的 `simulation_duration`（默认 720 时间单位）内，
+最大化完成的放飞架次。错失架次（missed sorties）作为评估指标。
 
 ---
 
@@ -150,28 +151,51 @@ Reward = -α·Δt               （时间惩罚，α=1.0）
 
 ## 文件结构
 
-- `env/config.py`：配置参数与动作常量
-- `env/carrier_aircraft_env.py`：核心环境（~600 行）
-- `random_policy_test.py`：随机策略测试脚本
-- `carrier_aircraft_rl_model_for_codex.md`：数学建模文档
+```text
+.
+├── env/          # 事件驱动仿真环境、状态机与配置
+├── solution/     # Random、Heuristic、Sampled、RL 求解器
+├── rl/           # 观测编码、策略网络、PPO 与 checkpoint
+├── scripts/      # 求解、训练、评估和随机基线入口
+├── outputs/      # 已有实验 CSV 与图表
+├── doc/          # 前置约束、建模说明和项目文档
+├── README.md
+└── requirements.txt
+```
+
+`env/` 只负责定义问题和推进状态；`solution/` 负责根据环境状态选择动作；
+`rl/` 只包含强化学习组件；可执行入口统一放在 `scripts/`。
 
 ## 运行
 
+从项目根目录执行：
+
 ```bash
-python random_policy_test.py
+# 默认启发式求解
+python -m scripts.solve
+
+# 其他求解器
+python -m scripts.solve --solver random --runs 5
+python -m scripts.solve --solver sampled --sampled-samples 30
+python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
+
+# PPO 训练与评估
+python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
+python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt --runs 10
+
+# 旧版随机策略明细输出
+python -m scripts.random_policy_test --runs 5
 ```
 
-可选参数：
+实验结果建议写入 `outputs/`：
 
 ```bash
-python random_policy_test.py \
-    --seed 42 \
-    --num-aircraft 40 \
-    --simulation-duration 720 \
-    --wave-interval 120 \
-    --runs 5 \
-    --csv timing_records.csv \
-    --runs-csv runs_summary.csv
+python -m scripts.solve \
+    --solver heuristic \
+    --runs 10 \
+    --runs-csv outputs/runs.csv \
+    --timing-csv outputs/timing.csv \
+    --missed-csv outputs/missed.csv
 ```
 
 ## 动作格式
@@ -189,4 +213,3 @@ python random_policy_test.py \
 ```
 
 当无可用的高层动作时，调用 `step(None)` 推进时间到下一事件。
-

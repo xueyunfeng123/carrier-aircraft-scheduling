@@ -7,7 +7,7 @@ working in this repository.
 
 There are three distinct layers. Do not silently mix them.
 
-1. `../前置约束.md`
+1. `doc/前置约束.md`
    - Cleaned version of the requirements supplied by the problem owner.
    - Describes the intended full scenario: 75 aircraft, 45 aircraft on deck,
      five spares, failures, sea state, personnel shifts, transport paths, and
@@ -156,7 +156,7 @@ evaluation scenarios.
 |---|---|
 | `env/config.py` | Base capacities, durations, reward constants, and action IDs |
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
-| `solve.py` | Unified command-line runner and CSV export |
+| `scripts/solve.py` | Unified command-line runner and CSV export |
 | `solution/random_solver.py` | Uniform random legal-action baseline |
 | `solution/heuristic_solver.py` | Wave/deadline-aware slack heuristic |
 | `solution/sampled_random_solver.py` | Best-of-N complete random rollout planner |
@@ -164,8 +164,11 @@ evaluation scenarios.
 | `rl/obs_encoder.py` | Normalized aircraft/global features and legal-action masks |
 | `rl/model.py` | Hierarchical policy/value network |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
-| `train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
-| `evaluate_rl.py` | Checkpoint evaluation |
+| `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
+| `scripts/evaluate_rl.py` | Checkpoint evaluation |
+| `scripts/random_policy_test.py` | Legacy random-policy timing report |
+| `outputs/` | Tracked baseline CSV results and comparison figures |
+| `doc/` | Requirements, modeling notes, and project guidance |
 
 ### Solver contract
 
@@ -206,26 +209,26 @@ Run commands from `proj/`.
 
 ```bash
 # Heuristic baseline
-python solve.py
-python solve.py --solver heuristic --runs 10 --wave-interval 60 --simulation-duration 720
+python -m scripts.solve
+python -m scripts.solve --solver heuristic --runs 10 --wave-interval 60 --simulation-duration 720
 
 # Other implemented solvers
-python solve.py --solver random --seed 42 --runs 5
-python solve.py --solver sampled --sampled-samples 30
-python solve.py --solver rl --checkpoint checkpoints/rl_policy.pt
+python -m scripts.solve --solver random --seed 42 --runs 5
+python -m scripts.solve --solver sampled --sampled-samples 30
+python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
 # Export results
-python solve.py --solver heuristic --runs 10 \
-  --runs-csv runs.csv \
-  --timing-csv timing.csv \
-  --missed-csv missed.csv
+python -m scripts.solve --solver heuristic --runs 10 \
+  --runs-csv outputs/runs.csv \
+  --timing-csv outputs/timing.csv \
+  --missed-csv outputs/missed.csv
 
 # Train and evaluate PPO
-python train_rl.py --checkpoint checkpoints/rl_policy.pt
-python evaluate_rl.py --checkpoint checkpoints/rl_policy.pt --runs 10
+python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
+python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt --runs 10
 
 # Syntax smoke check
-python -m compileall -q env solution rl solve.py train_rl.py evaluate_rl.py
+python -m compileall -q env solution rl scripts
 ```
 
 Core environment and non-RL solvers use the Python standard library. RL
@@ -237,7 +240,7 @@ automated test suite or configured linter.
 - Preserve the single business objective: maximize completed launches within
   the fixed horizon.
 - Keep optimization metrics separate from solver-specific training rewards.
-- Do not add a requirement merely because it appears in `../前置约束.md`;
+- Do not add a requirement merely because it appears in `doc/前置约束.md`;
   first resolve its ambiguity and update the mathematical model.
 - Keep resource acquisition and release balanced on every event path.
 - Never allow action masks and action validation to disagree.

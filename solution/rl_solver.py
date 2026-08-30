@@ -1,4 +1,4 @@
-"""RL policy solver for inference through solve.py."""
+"""RL policy solver for inference through scripts.solve."""
 
 from __future__ import annotations
 
@@ -68,4 +68,3 @@ class RLSolver:
             return None
         action, _, _ = self.trainer.select_action(encoded, deterministic=self.deterministic)
         return action
-

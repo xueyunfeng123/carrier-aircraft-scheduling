@@ -6,7 +6,7 @@ import argparse
 import statistics
 
 from env.config import DEFAULT_CONFIG
-from solve import build_config, run_episode
+from scripts.solve import build_config, run_episode
 
 
 def main() -> None:
@@ -60,4 +60,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

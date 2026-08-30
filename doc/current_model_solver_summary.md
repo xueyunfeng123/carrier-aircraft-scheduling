@@ -6,7 +6,7 @@
 - 配置：`env/config.py`
 - 随机策略：`solution/random_solver.py`
 - 启发式策略：`solution/heuristic_solver.py`
-- 求解入口：`solve.py`
+- 求解入口：`scripts/solve.py`
 
 ## 1. 当前环境
 
@@ -226,7 +226,7 @@ simulation_duration = 12 × wave_interval
 runs = 10, seeds = 7..16, num_aircraft = 40
 ```
 
-![Random vs Heuristic Solver Comparison](solver_comparison_line_chart.svg)
+![Random vs Heuristic Solver Comparison](../outputs/solver_comparison_line_chart.svg)
 
 | 波次间隔 | 仿真时长 | Random 出动 | Heuristic 出动 | 增量 | Random missed | Heuristic missed | 降幅 |
 |---:|---:|---:|---:|---:|---:|---:|---:|
