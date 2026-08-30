@@ -170,6 +170,7 @@ evaluation scenarios.
 | `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
 | `scripts/evaluate_rl.py` | Checkpoint evaluation |
 | `scripts/random_policy_test.py` | Legacy random-policy timing report |
+| `scripts/benchmark_non_rl.py` | Reproducible benchmark for all non-RL solvers |
 | `outputs/` | Tracked baseline CSV results and comparison figures |
 | `doc/` | Requirements, modeling notes, and project guidance |
 | `tests/` | Standard-library unit and solver integration tests |

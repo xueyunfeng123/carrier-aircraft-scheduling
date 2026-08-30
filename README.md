@@ -215,6 +215,9 @@ python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt --runs 10
 
 # 旧版随机策略明细输出
 python -m scripts.random_policy_test --runs 5
+
+# 全部非 RL 求解器基准
+python -m scripts.benchmark_non_rl
 ```
 
 实验结果建议写入 `outputs/`：

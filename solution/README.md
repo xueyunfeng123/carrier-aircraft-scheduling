@@ -225,3 +225,12 @@ python -m scripts.solve \
 所有方法应在完全相同的环境参数和随机种子上比较，主指标统一使用
 `total_sorties_completed`。`total_missed_sorties`、运行步数和计算耗时
 作为辅助分析指标。
+
+统一基准命令：
+
+```bash
+python -m scripts.benchmark_non_rl
+```
+
+默认使用 60、80、100、120 分钟波次间隔，每种配置运行 12 个完整波次和
+10 个相同随机种子，结果写入 `outputs/non_rl_benchmark.csv`。
