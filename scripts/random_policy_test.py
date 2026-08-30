@@ -10,6 +10,12 @@ from tqdm import tqdm
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
+from scripts.evaluation_defaults import (
+    DEFAULT_EVALUATION_DURATION,
+    DEFAULT_EVALUATION_RUNS,
+    DEFAULT_EVALUATION_SEED,
+    DEFAULT_EVALUATION_WAVE_INTERVAL,
+)
 from solution import RandomSolver
 
 
@@ -181,12 +187,12 @@ def print_run_summary(results: List[Dict[str, Any]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
     parser.add_argument("--group-size", type=int, default=DEFAULT_CONFIG["group_size"])
-    parser.add_argument("--simulation-duration", type=float, default=DEFAULT_CONFIG["simulation_duration"])
-    parser.add_argument("--wave-interval", type=float, default=DEFAULT_CONFIG["wave_interval"])
-    parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
+    parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)
+    parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--csv", type=str, default="")
     parser.add_argument("--runs-csv", type=str, default="")

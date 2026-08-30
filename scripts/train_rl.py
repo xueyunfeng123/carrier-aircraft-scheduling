@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import random
 import statistics
 from typing import Dict
 
@@ -24,19 +25,27 @@ from rl.obs_encoder import (
 from rl.ppo_trainer import PPOTrainer
 from rl.rollout_buffer import RolloutBuffer
 from rl.train_config import PPOConfig
+from scripts.evaluation_defaults import (
+    DEFAULT_EVALUATION_DURATION,
+    DEFAULT_EVALUATION_RUNS,
+    DEFAULT_EVALUATION_SEED,
+    DEFAULT_EVALUATION_WAVE_INTERVAL,
+    DEFAULT_TRAINING_SEED,
+)
 from scripts.solve import build_config, run_episode
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seed", type=int, default=DEFAULT_TRAINING_SEED)
+    parser.add_argument("--eval-seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
     parser.add_argument("--group-size", type=int, default=DEFAULT_CONFIG["group_size"])
     parser.add_argument("--num-parking-spots", type=int, default=DEFAULT_CONFIG["num_parking_spots"])
     parser.add_argument("--parking-base-transfer-time", type=float, default=DEFAULT_CONFIG["parking_base_transfer_time"])
     parser.add_argument("--parking-ring-time-step", type=float, default=DEFAULT_CONFIG["parking_ring_time_step"])
-    parser.add_argument("--simulation-duration", type=float, default=DEFAULT_CONFIG["simulation_duration"])
-    parser.add_argument("--wave-interval", type=float, default=DEFAULT_CONFIG["wave_interval"])
+    parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
+    parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)
     parser.add_argument("--num-ammo-transport-vehicles", type=int, default=DEFAULT_CONFIG["num_ammo_transport_vehicles"])
     parser.add_argument("--num-lower-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_lower_weapon_lifts"])
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])
@@ -51,10 +60,11 @@ def main() -> None:
     parser.add_argument("--aircraft-embed-dim", type=int, default=64)
     parser.add_argument("--sortie-bonus", type=float, default=0.0)
     parser.add_argument("--miss-penalty", type=float, default=1.0)
-    parser.add_argument("--eval-runs", type=int, default=3)
+    parser.add_argument("--eval-runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--save-every", type=int, default=10)
     args = parser.parse_args()
 
+    random.seed(args.seed)
     torch.manual_seed(args.seed)
     config = build_config(args)
     ppo_config = PPOConfig(
@@ -93,13 +103,20 @@ def main() -> None:
                 optimizer,
                 extra={
                     "update": update,
+                    "eval_seed": args.eval_seed,
                     "env_config": config,
                     "ppo_config": ppo_config.__dict__,
                 },
             )
 
         if update % args.save_every == 0 or update == 1:
-            eval_stats = evaluate_policy(config, args.checkpoint, args.seed, args.eval_runs, args.device)
+            eval_stats = evaluate_policy(
+                config,
+                args.checkpoint,
+                args.eval_seed,
+                args.eval_runs,
+                args.device,
+            )
             print(
                 "update,"
                 f"{update},"
@@ -118,32 +135,35 @@ def collect_rollout(
     seed: int,
 ) -> RolloutBuffer:
     buffer = RolloutBuffer()
-    pending_reward = 0.0
     if env.done:
         env.reset(seed=seed)
 
     while len(buffer) < config.rollout_steps:
         encoded = encode_observation(env)
         if not any(encoded.high_mask):
-            reward, done = step_with_shaping(env, None, config)
-            pending_reward += reward
+            _, done = step_with_shaping(env, None, config)
             if done:
                 env.reset(seed=seed + len(buffer))
-                pending_reward = 0.0
             continue
 
         action, log_prob, value = trainer.select_action(encoded, deterministic=False)
         reward, done = step_with_shaping(env, action, config)
+        while not done:
+            next_encoded = encode_observation(env)
+            if any(next_encoded.high_mask):
+                break
+            event_reward, done = step_with_shaping(env, None, config)
+            reward += event_reward
+
         buffer.add(
             encoded,
             action["high_level"],
             action["aircraft_id"],
-            pending_reward + reward,
+            reward,
             done,
             value,
             log_prob,
         )
-        pending_reward = 0.0
         if done:
             env.reset(seed=seed + len(buffer))
     return buffer

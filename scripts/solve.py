@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Type
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG
+from scripts.evaluation_defaults import (
+    DEFAULT_EVALUATION_DURATION,
+    DEFAULT_EVALUATION_SEED,
+    DEFAULT_EVALUATION_WAVE_INTERVAL,
+)
 from solution import (
     CPSATSolver,
     EDDSolver,
@@ -137,7 +142,7 @@ def write_runs_csv(path: str, results: List[Dict[str, Any]]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--solver", choices=sorted(SOLVERS), default="heuristic")
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
@@ -153,8 +158,8 @@ def main() -> None:
         type=float,
         default=DEFAULT_CONFIG["parking_ring_time_step"],
     )
-    parser.add_argument("--simulation-duration", type=float, default=DEFAULT_CONFIG["simulation_duration"])
-    parser.add_argument("--wave-interval", type=float, default=DEFAULT_CONFIG["wave_interval"])
+    parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
+    parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)
     parser.add_argument(
         "--num-ammo-transport-vehicles",
         type=int,

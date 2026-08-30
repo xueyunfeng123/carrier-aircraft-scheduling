@@ -196,28 +196,34 @@ conda activate carrier-aircraft-scheduling
 
 激活环境后，从项目根目录执行：
 
+正式基线统一使用 60 分钟波次、12 个完整波次和单一环境种子
+`10007`。这些默认值集中定义在 `scripts/evaluation_defaults.py`；PPO
+训练使用独立种子 `7`。
+
 ```bash
 # 默认启发式求解
 python -m scripts.solve
 
 # 其他求解器
-python -m scripts.solve --solver random --runs 5
-python -m scripts.solve --solver fifo --runs 5
-python -m scripts.solve --solver spt --runs 5
-python -m scripts.solve --solver edd --runs 5
+python -m scripts.solve --solver random
+python -m scripts.solve --solver fifo
+python -m scripts.solve --solver spt
+python -m scripts.solve --solver edd
 python -m scripts.solve --solver sampled --sampled-samples 30
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
 # PPO 训练与评估
 python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
-python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt --runs 10
+python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 
 # 旧版随机策略明细输出
-python -m scripts.random_policy_test --runs 5
+python -m scripts.random_policy_test
 
-# 全部非 RL 求解器基准
-python -m scripts.benchmark_non_rl
+# 全部求解器统一基准
+python -m scripts.benchmark_non_rl \
+    --rl-checkpoint checkpoints/rl_policy.pt \
+    --output outputs/all_solver_benchmark_60min_seed10007.csv
 ```
 
 实验结果建议写入 `outputs/`：

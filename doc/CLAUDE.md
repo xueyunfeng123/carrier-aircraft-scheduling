@@ -167,10 +167,11 @@ evaluation scenarios.
 | `rl/obs_encoder.py` | Normalized aircraft/global features and legal-action masks |
 | `rl/model.py` | Hierarchical policy/value network |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
+| `scripts/evaluation_defaults.py` | Fixed training and evaluation seeds, horizon, and run count |
 | `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
 | `scripts/evaluate_rl.py` | Checkpoint evaluation |
 | `scripts/random_policy_test.py` | Legacy random-policy timing report |
-| `scripts/benchmark_non_rl.py` | Reproducible benchmark for all non-RL solvers |
+| `scripts/benchmark_non_rl.py` | Reproducible benchmark for non-RL solvers and an optional RL checkpoint |
 | `outputs/` | Tracked baseline CSV results and comparison figures |
 | `doc/` | Requirements, modeling notes, and project guidance |
 | `tests/` | Standard-library unit and solver integration tests |
@@ -222,26 +223,30 @@ python -m pip install -r requirements.txt
 
 # Heuristic baseline
 python -m scripts.solve
-python -m scripts.solve --solver heuristic --runs 10 --wave-interval 60 --simulation-duration 720
 
 # Other implemented solvers
-python -m scripts.solve --solver random --seed 42 --runs 5
-python -m scripts.solve --solver fifo --runs 5
-python -m scripts.solve --solver spt --runs 5
-python -m scripts.solve --solver edd --runs 5
+python -m scripts.solve --solver random
+python -m scripts.solve --solver fifo
+python -m scripts.solve --solver spt
+python -m scripts.solve --solver edd
 python -m scripts.solve --solver sampled --sampled-samples 30
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
 # Export results
-python -m scripts.solve --solver heuristic --runs 10 \
+python -m scripts.solve --solver heuristic \
   --runs-csv outputs/runs.csv \
   --timing-csv outputs/timing.csv \
   --missed-csv outputs/missed.csv
 
 # Train and evaluate PPO
 python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
-python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt --runs 10
+python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
+
+# Compare every solver on the fixed evaluation scenario
+python -m scripts.benchmark_non_rl \
+  --rl-checkpoint checkpoints/rl_policy.pt \
+  --output outputs/all_solver_benchmark_60min_seed10007.csv
 
 # Syntax smoke check
 python -m compileall -q env solution rl scripts
@@ -295,7 +300,10 @@ a clearly documented physical assumption.
 - Keep resource acquisition and release balanced on every event path.
 - Never allow action masks and action validation to disagree.
 - Preserve deterministic replay for a fixed environment seed and solver seed.
-- Compare solvers using identical scenario parameters and random seeds.
+- The fixed baseline uses a 60-minute wave interval, 12 waves, one run, and
+  environment seed `10007` for every solver. PPO training uses seed `7`.
+- Keep those defaults centralized in `scripts/evaluation_defaults.py`. Treat
+  multi-seed robustness studies as separate experiments.
 - Report at least completed launches, missed sorties, simulation completion,
   and resource feasibility.
 - Update this file, the mathematical model, and user-facing documentation when

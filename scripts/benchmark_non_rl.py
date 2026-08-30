@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from env.config import DEFAULT_CONFIG
+from scripts.evaluation_defaults import (
+    DEFAULT_EVALUATION_RUNS,
+    DEFAULT_EVALUATION_SEED,
+    DEFAULT_EVALUATION_WAVE_INTERVAL,
+    DEFAULT_EVALUATION_WAVES,
+)
 from scripts.solve import run_episode
 
 
@@ -18,15 +24,28 @@ NON_RL_SOLVERS = ("random", "fifo", "spt", "edd", "heuristic", "sampled", "cp_sa
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--intervals", type=float, nargs="+", default=[60, 80, 100, 120])
-    parser.add_argument("--waves", type=int, default=12)
-    parser.add_argument("--runs", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--intervals",
+        type=float,
+        nargs="+",
+        default=[DEFAULT_EVALUATION_WAVE_INTERVAL],
+    )
+    parser.add_argument("--waves", type=int, default=DEFAULT_EVALUATION_WAVES)
+    parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
+    parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--sampled-samples", type=int, default=30)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
+    parser.add_argument("--rl-checkpoint", type=str, default="")
+    parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
     args = parser.parse_args()
+
+    solver_names = NON_RL_SOLVERS
+    if args.rl_checkpoint:
+        if not Path(args.rl_checkpoint).is_file():
+            parser.error(f"RL checkpoint does not exist: {args.rl_checkpoint}")
+        solver_names += ("rl",)
 
     rows: List[Dict[str, Any]] = []
     print(
@@ -39,12 +58,18 @@ def main() -> None:
         config["simulation_duration"] = float(interval) * args.waves
         capacity = args.waves * int(config["group_size"])
 
-        for solver_name in NON_RL_SOLVERS:
+        for solver_name in solver_names:
             options: Dict[str, Any] = {}
             if solver_name == "sampled":
                 options["samples"] = args.sampled_samples
             elif solver_name == "cp_sat":
                 options["max_time_seconds"] = args.cp_sat_max_time
+            elif solver_name == "rl":
+                options = {
+                    "checkpoint": args.rl_checkpoint,
+                    "device": args.rl_device,
+                    "deterministic": True,
+                }
 
             totals: List[int] = []
             missed: List[int] = []
