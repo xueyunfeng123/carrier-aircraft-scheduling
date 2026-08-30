@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument("--rl-checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
+    parser.add_argument("--rl-label", type=str, default="rl")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
     args = parser.parse_args()
@@ -110,7 +111,7 @@ def main() -> None:
                 for values in zip(*wave_runs)
             ]
             row = {
-                "solver": solver_name,
+                "solver": args.rl_label if solver_name == "rl" else solver_name,
                 "wave_interval": float(interval),
                 "simulation_duration": config["simulation_duration"],
                 "waves": args.waves,
@@ -127,7 +128,7 @@ def main() -> None:
             }
             rows.append(row)
             print(
-                f"{solver_name},{interval:g},{args.waves},"
+                f"{row['solver']},{interval:g},{args.waves},"
                 f"{row['mean_total_sorties']:.2f},"
                 f"{row['std_total_sorties']:.2f},"
                 f"{row['mean_sorties_per_wave']:.2f},"
@@ -141,7 +142,11 @@ def main() -> None:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        writer = csv.DictWriter(
+            file,
+            fieldnames=list(rows[0]),
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
     print(f"benchmark_csv_written: {output}")

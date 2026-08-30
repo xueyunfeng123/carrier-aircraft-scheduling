@@ -6,6 +6,7 @@ import random
 from typing import Dict, Tuple
 
 from rl.masked_categorical import masked_categorical
+from rl.model import select_low_action_logits
 from rl.obs_encoder import batch_to_torch, to_torch_batch
 
 
@@ -35,9 +36,10 @@ class PPOTrainer:
                 high_action = high_dist.sample()
 
             low_mask = batch["low_masks"][self.torch.arange(1, device=self.device), high_action]
-            low_dist = masked_categorical(low_logits, low_mask)
+            selected_low_logits = select_low_action_logits(low_logits, high_action)
+            low_dist = masked_categorical(selected_low_logits, low_mask)
             if deterministic:
-                low_action = low_logits.masked_fill(~low_mask, -1.0e9).argmax(dim=-1)
+                low_action = selected_low_logits.masked_fill(~low_mask, -1.0e9).argmax(dim=-1)
             else:
                 low_action = low_dist.sample()
 
@@ -54,6 +56,7 @@ class PPOTrainer:
         if len(buffer) == 0:
             return {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
 
+        self.model.train()
         batch = batch_to_torch(buffer.observations, self.device)
         high_actions = torch.tensor(buffer.high_actions, dtype=torch.long, device=self.device)
         low_actions = torch.tensor(buffer.low_actions, dtype=torch.long, device=self.device)
@@ -83,7 +86,8 @@ class PPOTrainer:
                     torch.arange(len(mb), device=self.device),
                     mb_high_actions,
                 ]
-                low_dist = masked_categorical(low_logits, selected_low_mask)
+                selected_low_logits = select_low_action_logits(low_logits, mb_high_actions)
+                low_dist = masked_categorical(selected_low_logits, selected_low_mask)
 
                 mb_low_actions = low_actions[mb_tensor]
                 log_probs = high_dist.log_prob(mb_high_actions) + low_dist.log_prob(mb_low_actions)
@@ -115,4 +119,3 @@ class PPOTrainer:
                     "entropy": float(entropy.item()),
                 }
         return last_stats
-

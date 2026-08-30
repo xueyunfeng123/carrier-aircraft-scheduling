@@ -165,7 +165,8 @@ evaluation scenarios.
 | `solution/rl_solver.py` | Inference wrapper for a PyTorch checkpoint |
 | `solution/README.md` | Solver behavior, tradeoffs, and invocation guide |
 | `rl/obs_encoder.py` | Normalized aircraft/global features and legal-action masks |
-| `rl/model.py` | Hierarchical policy/value network |
+| `rl/model.py` | Hierarchical policy/value network with action-conditioned aircraft logits |
+| `rl/behavior_cloning.py` | Heuristic demonstration collection and policy pretraining |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
 | `scripts/evaluation_defaults.py` | Fixed training and evaluation seeds, horizon, and run count |
 | `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
@@ -239,13 +240,14 @@ python -m scripts.solve --solver heuristic \
   --timing-csv outputs/timing.csv \
   --missed-csv outputs/missed.csv
 
-# Train and evaluate PPO
+# Train with heuristic behavior cloning followed by PPO, then evaluate
 python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
 python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 
 # Compare every solver on the fixed evaluation scenario
 python -m scripts.benchmark_non_rl \
   --rl-checkpoint checkpoints/rl_policy.pt \
+  --rl-label rl_bc_ppo \
   --output outputs/all_solver_benchmark_60min_seed10007.csv
 
 # Syntax smoke check
@@ -295,6 +297,9 @@ a clearly documented physical assumption.
 - Preserve the single business objective: maximize completed launches within
   the fixed horizon.
 - Keep optimization metrics separate from solver-specific training rewards.
+- Default RL training uses heuristic behavior cloning followed by PPO and saves
+  the best fixed-seed checkpoint. Label it `rl_bc_ppo`, not pure PPO.
+- Pure PPO experiments must pass `--bc-episodes 0` and be reported separately.
 - Do not add a requirement merely because it appears in `doc/前置约束.md`;
   first resolve its ambiguity and update the mathematical model.
 - Keep resource acquisition and release balanced on every event path.

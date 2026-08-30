@@ -47,7 +47,10 @@ class RLSolver:
         checkpoint_payload = None
         if checkpoint_path and checkpoint_path.exists():
             checkpoint_payload = load_checkpoint(str(checkpoint_path), device=device)
-            model_config.update(checkpoint_payload.get("model_config", {}))
+            checkpoint_model_config = checkpoint_payload.get("model_config", {})
+            model_config.update(checkpoint_model_config)
+            if "action_conditioned_low_head" not in checkpoint_model_config:
+                model_config["action_conditioned_low_head"] = False
 
         self.model = CarrierPolicyValueNet(**model_config).to(device)
         if checkpoint_payload is not None:

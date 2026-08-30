@@ -191,13 +191,16 @@ python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 推理过程：
 
 1. 将每架飞机的 18 维特征和 18 维全局特征编码为张量；
-2. 网络输出 4 个高层动作 logits、每架飞机的低层 logits 和状态价值；
+2. 网络输出 4 个高层动作 logits、按作业类型区分的飞机 logits 和状态价值；
 3. 使用 action mask 屏蔽非法动作；
 4. 先选择作业类型，再选择飞机；
 5. 确定性模式取最大 logit，随机模式按策略分布采样。
 
 模型结构位于 `rl/model.py`，采用共享飞机编码器、mean/max pooling、
-高层动作头、飞机选择头和价值头。
+高层动作头、动作条件化飞机选择头和价值头。默认训练先使用 Heuristic
+示范进行行为克隆预热，再以成功放飞量作为奖励进行 PPO 微调；训练结束
+时保存固定评估 seed 上表现最好的 checkpoint。使用
+`--bc-episodes 0` 可运行不含行为克隆的纯 PPO 对照。
 
 运行：
 

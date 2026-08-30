@@ -213,7 +213,7 @@ python -m scripts.solve --solver sampled --sampled-samples 30
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
-# PPO 训练与评估
+# Heuristic 行为克隆预热、PPO 微调与评估
 python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
 python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 
@@ -223,8 +223,14 @@ python -m scripts.random_policy_test
 # 全部求解器统一基准
 python -m scripts.benchmark_non_rl \
     --rl-checkpoint checkpoints/rl_policy.pt \
+    --rl-label rl_bc_ppo \
     --output outputs/all_solver_benchmark_60min_seed10007.csv
 ```
+
+默认 RL 训练先从 5 个训练 seed 收集 Heuristic 示范并进行行为克隆，再使用
+只包含成功放飞奖励的 PPO 微调。训练过程按固定评估 seed 保存最佳
+checkpoint，避免后续更新覆盖更好的策略。纯 PPO 对照可通过
+`--bc-episodes 0` 运行。
 
 实验结果建议写入 `outputs/`：
 
