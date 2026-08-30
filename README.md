@@ -165,6 +165,8 @@ Reward = -α·Δt               （时间惩罚，α=1.0）
 
 `env/` 只负责定义问题和推进状态；`solution/` 负责根据环境状态选择动作；
 `rl/` 只包含强化学习组件；可执行入口统一放在 `scripts/`。
+各求解器的决策逻辑和适用场景见
+[solution/README.md](solution/README.md)。
 
 ## 环境配置
 

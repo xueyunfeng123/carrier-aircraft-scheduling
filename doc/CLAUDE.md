@@ -161,6 +161,7 @@ evaluation scenarios.
 | `solution/heuristic_solver.py` | Wave/deadline-aware slack heuristic |
 | `solution/sampled_random_solver.py` | Best-of-N complete random rollout planner |
 | `solution/rl_solver.py` | Inference wrapper for a PyTorch checkpoint |
+| `solution/README.md` | Solver behavior, tradeoffs, and invocation guide |
 | `rl/obs_encoder.py` | Normalized aircraft/global features and legal-action masks |
 | `rl/model.py` | Hierarchical policy/value network |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
