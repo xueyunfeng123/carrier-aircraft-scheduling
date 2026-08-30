@@ -9,7 +9,7 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 
 
 AIRCRAFT_FEATURE_DIM = 18
-GLOBAL_FEATURE_DIM = 18
+GLOBAL_FEATURE_DIM = 20
 
 
 @dataclass
@@ -164,6 +164,10 @@ def _encode_global_features(
         resources["upper_weapon_lifts"] / max(1.0, float(config["num_upper_weapon_lifts"])),
         resources["personnel"] / max(1.0, float(config["num_personnel"])),
         resources["launch_channels"] / max(1.0, float(config["num_launch_channels"])),
+        resources["dedicated_launch_channels"]
+        / max(1.0, float(env.num_dedicated_launch_channels)),
+        resources["shared_launch_channels"]
+        / max(1.0, float(env.num_shared_launch_channels)),
         resources["free_parking_spots"] / max(1.0, float(config["num_parking_spots"])),
         len(env.event_queue) / 100.0,
         sum(1 for aircraft in env.aircraft if aircraft.is_airborne) / max(1, env.num_aircraft),
@@ -176,4 +180,3 @@ def _scale_nonnegative(value: float, divisor: float) -> float:
     if value < 0:
         return -1.0
     return value / max(1.0, divisor)
-

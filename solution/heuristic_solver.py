@@ -33,6 +33,16 @@ class WaveHeuristicSolver:
         if not any(high_mask):
             return None
 
+        if (
+            high_mask[ACTION_RECOVERY]
+            and high_mask[ACTION_LAUNCH]
+            and self.env.num_shared_launch_channels > 0
+        ):
+            aircraft_id = self._choose_recovery_aircraft(
+                mask["low_level_by_high"][ACTION_RECOVERY]
+            )
+            return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
+
         if high_mask[ACTION_LAUNCH]:
             aircraft_id = self._choose_launch_aircraft(mask["low_level_by_high"][ACTION_LAUNCH])
             return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}

@@ -24,6 +24,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--sampled-samples", type=int, default=30)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
+    parser.add_argument(
+        "--num-launch-channels",
+        type=int,
+        default=DEFAULT_CONFIG["num_launch_channels"],
+    )
+    parser.add_argument(
+        "--num-shared-launch-channels",
+        type=int,
+        default=DEFAULT_CONFIG.get("num_shared_launch_channels", 0),
+    )
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
     args = parser.parse_args()
@@ -37,6 +47,8 @@ def main() -> None:
         config = dict(DEFAULT_CONFIG)
         config["wave_interval"] = float(interval)
         config["simulation_duration"] = float(interval) * args.waves
+        config["num_launch_channels"] = args.num_launch_channels
+        config["num_shared_launch_channels"] = args.num_shared_launch_channels
         capacity = args.waves * int(config["group_size"])
 
         for solver_name in NON_RL_SOLVERS:
@@ -91,6 +103,8 @@ def main() -> None:
                 "waves": args.waves,
                 "runs": args.runs,
                 "seed_start": args.seed,
+                "num_launch_channels": args.num_launch_channels,
+                "num_shared_launch_channels": args.num_shared_launch_channels,
                 "mean_total_sorties": statistics.mean(totals),
                 "std_total_sorties": statistics.stdev(totals) if args.runs > 1 else 0.0,
                 "mean_sorties_per_wave": statistics.mean(totals) / args.waves,

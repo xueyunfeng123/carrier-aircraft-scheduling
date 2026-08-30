@@ -57,6 +57,7 @@ to maximizing completed sorties and must not be added as a second objective.
 
 - 40 aircraft, split into groups A and B with 20 aircraft each.
 - 45 abstract parking spots.
+- Four launch positions: two dedicated and two shared with the recovery area.
 - Fixed wave interval `wave_interval`, default 120 minutes.
 - Fixed simulation horizon `simulation_duration`, default 720 minutes.
 - Wave 0 launches A and has no recovery group.
@@ -78,7 +79,7 @@ launch -> airborne -> recovery -> parking -> fueling || arming -> launch
 | Resource | Base-model capacity | Supplied requirement |
 |---|---:|---:|
 | Recovery channel/runway | 1 | 1 |
-| Launch channel/position | 1 | 4 launch positions |
+| Launch positions | 4, including 2 shared with recovery | 4 launch positions |
 | Parking spots | 45 | 45 |
 | Fuel servers | 20 | 20 stations, each covering two spots |
 | Arm vehicles | 10 | 10 |
@@ -137,7 +138,7 @@ requirements:
 - aircraft failures, repair distribution, hangar transfer, and return to service;
 - sea-state-dependent launch delay, recovery success rate, and wave-off;
 - pilots, command staff, individual support staff, rest, fatigue, and shifts;
-- four physical launch positions and interference with the recovery area;
+- exact geometry and safety separation inside the shared launch/recovery area;
 - aircraft elevators and tractor allocation;
 - explicit taxi routes, path conflicts, jet-blast constraints, and deck topology;
 - ammunition types, compatibility, inventory, assembly capacity, and storage;

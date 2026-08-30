@@ -46,11 +46,19 @@ class CPSATSolver:
         if not any(mask["high_level"]):
             return None
 
+        recovery_ids = (
+            self._candidate_ids(mask, ACTION_RECOVERY)
+            if mask["high_level"][ACTION_RECOVERY]
+            else []
+        )
         launch_ids = (
             self._candidate_ids(mask, ACTION_LAUNCH)
             if mask["high_level"][ACTION_LAUNCH]
             else []
         )
+        if recovery_ids and launch_ids and self.env.num_shared_launch_channels > 0:
+            aircraft_id = min(recovery_ids)
+            return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
         if launch_ids:
             aircraft_id = min(
                 launch_ids,
@@ -60,12 +68,6 @@ class CPSATSolver:
                 ),
             )
             return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
-
-        recovery_ids = (
-            self._candidate_ids(mask, ACTION_RECOVERY)
-            if mask["high_level"][ACTION_RECOVERY]
-            else []
-        )
         if recovery_ids:
             aircraft_id = min(
                 recovery_ids,

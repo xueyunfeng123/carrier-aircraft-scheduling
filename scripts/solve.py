@@ -94,6 +94,16 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     config["num_parking_spots"] = args.num_parking_spots
     config["parking_base_transfer_time"] = args.parking_base_transfer_time
     config["parking_ring_time_step"] = args.parking_ring_time_step
+    config["num_launch_channels"] = getattr(
+        args,
+        "num_launch_channels",
+        DEFAULT_CONFIG["num_launch_channels"],
+    )
+    config["num_shared_launch_channels"] = getattr(
+        args,
+        "num_shared_launch_channels",
+        DEFAULT_CONFIG["num_shared_launch_channels"],
+    )
     config["num_ammo_transport_vehicles"] = args.num_ammo_transport_vehicles
     config["num_lower_weapon_lifts"] = args.num_lower_weapon_lifts
     config["num_upper_weapon_lifts"] = args.num_upper_weapon_lifts
@@ -155,6 +165,16 @@ def main() -> None:
     )
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_CONFIG["simulation_duration"])
     parser.add_argument("--wave-interval", type=float, default=DEFAULT_CONFIG["wave_interval"])
+    parser.add_argument(
+        "--num-launch-channels",
+        type=int,
+        default=DEFAULT_CONFIG["num_launch_channels"],
+    )
+    parser.add_argument(
+        "--num-shared-launch-channels",
+        type=int,
+        default=DEFAULT_CONFIG["num_shared_launch_channels"],
+    )
     parser.add_argument(
         "--num-ammo-transport-vehicles",
         type=int,

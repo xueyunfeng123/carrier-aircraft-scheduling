@@ -63,6 +63,7 @@ class AircraftRecord:
     launch_ready: Optional[float] = None
     launch_start: Optional[float] = None
     launch_end: Optional[float] = None
+    launch_channel_type: Optional[str] = None
 
     def as_vector(self) -> List[float]:
         return [
@@ -101,6 +102,15 @@ class CarrierAircraftSchedulingEnv:
         self.num_parking_spots = int(self.config["num_parking_spots"])
         if self.num_parking_spots < self.num_aircraft:
             raise ValueError("num_parking_spots must be at least num_aircraft")
+        self.num_launch_channels = int(self.config["num_launch_channels"])
+        self.num_shared_launch_channels = int(self.config["num_shared_launch_channels"])
+        if not 0 <= self.num_shared_launch_channels <= self.num_launch_channels:
+            raise ValueError(
+                "num_shared_launch_channels must be between 0 and num_launch_channels"
+            )
+        self.num_dedicated_launch_channels = (
+            self.num_launch_channels - self.num_shared_launch_channels
+        )
         self.rng = random.Random()
         self.reset()
 
@@ -142,7 +152,9 @@ class CarrierAircraftSchedulingEnv:
         self._schedule_wave_events()
 
         self.free_recovery_channels = int(self.config["num_recovery_channels"])
-        self.free_launch_channels = int(self.config["num_launch_channels"])
+        self.free_launch_channels = self.num_launch_channels
+        self.free_dedicated_launch_channels = self.num_dedicated_launch_channels
+        self.free_shared_launch_channels = self.num_shared_launch_channels
         self.free_fuel_servers = int(self.config["num_fuel_servers"])
         self.free_arm_vehicles = int(self.config["num_arm_vehicles"])
         self.free_ammo_transport_vehicles = int(self.config["num_ammo_transport_vehicles"])
@@ -226,6 +238,8 @@ class CarrierAircraftSchedulingEnv:
                 "upper_weapon_lifts": self.free_upper_weapon_lifts,
                 "personnel": self.free_personnel,
                 "launch_channels": self.free_launch_channels,
+                "dedicated_launch_channels": self.free_dedicated_launch_channels,
+                "shared_launch_channels": self.free_shared_launch_channels,
                 "free_parking_spots": sum(1 for item in self.parking_occupancy if item is None),
             },
             "event_queue_size": len(self.event_queue),
@@ -255,7 +269,7 @@ class CarrierAircraftSchedulingEnv:
     def get_high_level_action_mask(self) -> List[int]:
         candidates = self._candidate_sets()
         return [
-            int(len(candidates["R"]) > 0 and self.free_recovery_channels > 0),
+            int(len(candidates["R"]) > 0 and self._can_start_recovery()),
             int(
                 len(candidates["F"]) > 0
                 and self.free_fuel_servers > 0
@@ -267,7 +281,7 @@ class CarrierAircraftSchedulingEnv:
                 and self.free_lower_weapon_lifts > 0
                 and self.free_personnel >= int(self.config["arm_personnel_required"])
             ),
-            int(len(candidates["L"]) > 0 and self.free_launch_channels > 0),
+            int(len(candidates["L"]) > 0 and self._can_start_launch()),
         ]
 
     def get_low_level_action_mask(self, high_level_action: int) -> List[int]:
@@ -437,6 +451,13 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.arm_status = 0
                 aircraft.arm_stage = 0
                 aircraft.arm_quantity_required = 0
+                if aircraft.launch_channel_type == "dedicated":
+                    self.free_dedicated_launch_channels += 1
+                elif aircraft.launch_channel_type == "shared":
+                    self.free_shared_launch_channels += 1
+                else:
+                    raise RuntimeError("launch completed without an assigned channel")
+                aircraft.launch_channel_type = None
                 self.free_launch_channels += 1
                 completed["launch"] += 1
 
@@ -460,6 +481,21 @@ class CarrierAircraftSchedulingEnv:
         aircraft.recovery_start = self.time
         self.free_recovery_channels -= 1
         self._push_event(self.time + float(self.config["recovery_time"]), "recover_done", aircraft_id)
+
+    def _can_start_recovery(self) -> bool:
+        return (
+            self.free_recovery_channels > 0
+            and self.free_shared_launch_channels == self.num_shared_launch_channels
+        )
+
+    def _can_start_launch(self) -> bool:
+        recovery_active = (
+            self.free_recovery_channels
+            < int(self.config["num_recovery_channels"])
+        )
+        if recovery_active:
+            return self.free_dedicated_launch_channels > 0
+        return self.free_launch_channels > 0
 
     def _start_fueling(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
@@ -494,6 +530,18 @@ class CarrierAircraftSchedulingEnv:
 
     def _start_launch(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
+        if self.free_dedicated_launch_channels > 0:
+            aircraft.launch_channel_type = "dedicated"
+            self.free_dedicated_launch_channels -= 1
+        elif (
+            self.free_shared_launch_channels > 0
+            and self.free_recovery_channels
+            == int(self.config["num_recovery_channels"])
+        ):
+            aircraft.launch_channel_type = "shared"
+            self.free_shared_launch_channels -= 1
+        else:
+            raise RuntimeError("no compatible launch channel available")
         aircraft.launch_status = 2
         aircraft.launch_start = self.time
         self.free_launch_channels -= 1
