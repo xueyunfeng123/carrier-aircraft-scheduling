@@ -252,6 +252,39 @@ The CP-SAT baseline requires OR-Tools, while RL training and inference require
 PyTorch 2.0 or later. Tests use the standard-library `unittest` framework;
 there is currently no configured linter.
 
+## Environment constraint experiments
+
+Two completed experiments are intentionally kept outside `main`. Do not merge
+or cherry-pick them without an explicit decision.
+
+### `experiment/recovery-deadlines`
+
+- Commit: `2e37c29`
+- Adds a sampled 8-25 minute recovery deadline and a 10-minute retry delay.
+- This assumption is not present in `doc/前置约束.md`; it was introduced only
+  to test whether heterogeneous recovery urgency separates solver performance.
+- It strongly separates recovery-deadline misses but does not consistently
+  increase the gap in completed launches.
+- Current decision: retain for reference, do not merge as-is.
+
+### `experiment/shared-launch-recovery-zone`
+
+- Commit: `0e88f7d`
+- Models four launch positions: two dedicated and two shared with the recovery
+  area. Active recovery blocks shared launch positions, and active shared
+  launches block recovery.
+- The setup is derived from the supplied requirement that two of four launch
+  positions are located in the landing area; the mutual-exclusion assumption
+  still requires domain confirmation.
+- In the 60-minute scenario, the Heuristic-versus-Random gap increases from
+  12.3 to 16.0 completed launches over 12 waves. The effect is small or absent
+  at longer wave intervals.
+- Current decision: retain for review, not merged.
+
+New constraint experiments must be isolated on their own branch, compared
+against a matched control, and justified by either the supplied requirements or
+a clearly documented physical assumption.
+
 ## Development rules
 
 - Preserve the single business objective: maximize completed launches within
