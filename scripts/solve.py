@@ -9,13 +9,26 @@ from typing import Any, Dict, List, Type
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG
-from solution import RandomSolver, RLSolver, SampledRandomSolver, WaveHeuristicSolver
+from solution import (
+    CPSATSolver,
+    EDDSolver,
+    FIFOSolver,
+    RandomSolver,
+    RLSolver,
+    SPTSolver,
+    SampledRandomSolver,
+    WaveHeuristicSolver,
+)
 
 
 SOLVERS: Dict[str, Type] = {
+    "cp_sat": CPSATSolver,
+    "edd": EDDSolver,
+    "fifo": FIFOSolver,
     "heuristic": WaveHeuristicSolver,
     "random": RandomSolver,
     "rl": RLSolver,
+    "spt": SPTSolver,
     "sampled": SampledRandomSolver,
 }
 
@@ -35,6 +48,8 @@ def run_episode(
         solver = solver_cls(env, seed=seed)
     elif solver_name == "sampled":
         solver = solver_cls(env, seed=seed, max_steps=max_steps, **solver_options)
+    elif solver_name == "cp_sat":
+        solver = solver_cls(env, **solver_options)
     elif solver_name == "rl":
         solver = solver_cls(env, **solver_options)
     else:
@@ -159,6 +174,7 @@ def main() -> None:
     parser.add_argument("--timing-csv", type=str, default="")
     parser.add_argument("--missed-csv", type=str, default="")
     parser.add_argument("--sampled-samples", type=int, default=30)
+    parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-stochastic", action="store_true")
@@ -171,6 +187,10 @@ def main() -> None:
     if args.solver == "sampled":
         solver_options = {
             "samples": args.sampled_samples,
+        }
+    elif args.solver == "cp_sat":
+        solver_options = {
+            "max_time_seconds": args.cp_sat_max_time,
         }
     elif args.solver == "rl":
         solver_options = {
@@ -210,7 +230,13 @@ def main() -> None:
         mean_missed = statistics.mean(result["total_missed_sorties"] for result in results)
         print(f"mean_total_sorties_completed: {mean_completed:.2f}")
         print(f"mean_total_missed_sorties: {mean_missed:.2f}")
-    best = min(results, key=lambda item: (item["total_missed_sorties"], -item["total_sorties_completed"]))
+    best = max(
+        results,
+        key=lambda item: (
+            item["total_sorties_completed"],
+            -item["total_missed_sorties"],
+        ),
+    )
 
     if args.runs_csv:
         write_runs_csv(args.runs_csv, results)

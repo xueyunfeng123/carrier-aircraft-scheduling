@@ -71,8 +71,8 @@ class SampledRandomSolver:
     def _score(self, env: CarrierAircraftSchedulingEnv) -> Tuple[int, int, float]:
         metrics = env.get_evaluation_metrics()
         return (
-            -metrics["total_missed_sorties"],
             metrics["total_sorties_completed"],
+            -metrics["total_missed_sorties"],
             -env.time,
         )
 
@@ -87,4 +87,3 @@ class SampledRandomSolver:
         if aircraft_id < 0 or aircraft_id >= len(mask["low_level"]):
             return False
         return bool(mask["low_level"][aircraft_id])
-

@@ -158,8 +158,10 @@ evaluation scenarios.
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
 | `scripts/solve.py` | Unified command-line runner and CSV export |
 | `solution/random_solver.py` | Uniform random legal-action baseline |
+| `solution/priority_rule_solver.py` | FIFO, SPT, and EDD dispatching-rule baselines |
 | `solution/heuristic_solver.py` | Wave/deadline-aware slack heuristic |
 | `solution/sampled_random_solver.py` | Best-of-N complete random rollout planner |
+| `solution/cp_sat_solver.py` | Rolling CP-SAT resource-allocation baseline |
 | `solution/rl_solver.py` | Inference wrapper for a PyTorch checkpoint |
 | `solution/README.md` | Solver behavior, tradeoffs, and invocation guide |
 | `rl/obs_encoder.py` | Normalized aircraft/global features and legal-action masks |
@@ -170,6 +172,7 @@ evaluation scenarios.
 | `scripts/random_policy_test.py` | Legacy random-policy timing report |
 | `outputs/` | Tracked baseline CSV results and comparison figures |
 | `doc/` | Requirements, modeling notes, and project guidance |
+| `tests/` | Standard-library unit and solver integration tests |
 
 ### Solver contract
 
@@ -222,7 +225,11 @@ python -m scripts.solve --solver heuristic --runs 10 --wave-interval 60 --simula
 
 # Other implemented solvers
 python -m scripts.solve --solver random --seed 42 --runs 5
+python -m scripts.solve --solver fifo --runs 5
+python -m scripts.solve --solver spt --runs 5
+python -m scripts.solve --solver edd --runs 5
 python -m scripts.solve --solver sampled --sampled-samples 30
+python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
 # Export results
@@ -239,9 +246,10 @@ python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt --runs 10
 python -m compileall -q env solution rl scripts
 ```
 
-Core environment and non-RL solvers use the Python standard library. RL
-training and inference require PyTorch 2.0 or later. There is currently no
-automated test suite or configured linter.
+The core environment and rule-based solvers use the Python standard library.
+The CP-SAT baseline requires OR-Tools, while RL training and inference require
+PyTorch 2.0 or later. Tests use the standard-library `unittest` framework;
+there is currently no configured linter.
 
 ## Development rules
 

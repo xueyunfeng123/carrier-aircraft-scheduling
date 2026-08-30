@@ -202,7 +202,11 @@ python -m scripts.solve
 
 # 其他求解器
 python -m scripts.solve --solver random --runs 5
+python -m scripts.solve --solver fifo --runs 5
+python -m scripts.solve --solver spt --runs 5
+python -m scripts.solve --solver edd --runs 5
 python -m scripts.solve --solver sampled --sampled-samples 30
+python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
 # PPO 训练与评估

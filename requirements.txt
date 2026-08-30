@@ -1,6 +1,9 @@
 # Legacy random-policy progress display.
 tqdm>=4.0
 
+# CP-SAT baseline.
+ortools>=9.10
+
 # RL training and inference.
 numpy>=1.26
 torch>=2.0

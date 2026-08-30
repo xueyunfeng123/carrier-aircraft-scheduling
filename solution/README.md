@@ -41,8 +41,12 @@ choose_action() -> Optional[Dict[str, int]]
 | CLI 名称 | 类 | 类型 | 是否训练 | 主要用途 |
 |---|---|---|---|---|
 | `random` | `RandomSolver` | 随机策略 | 否 | 最弱基线、环境正确性检查 |
+| `fifo` | `FIFOSolver` | 经典派工规则 | 否 | 最长等待优先基线 |
+| `spt` | `SPTSolver` | 经典派工规则 | 否 | 最短作业时间优先基线 |
+| `edd` | `EDDSolver` | 经典派工规则 | 否 | 最早波次截止时间优先基线 |
 | `heuristic` | `WaveHeuristicSolver` | 规则启发式 | 否 | 当前主要非学习基线 |
 | `sampled` | `SampledRandomSolver` | 随机采样规划 | 否 | 检验多次随机搜索能带来的提升 |
+| `cp_sat` | `CPSATSolver` | 滚动整数优化 | 否 | 优化当前批次的资源分配 |
 | `rl` | `RLSolver` | 神经网络策略 | 是 | 加载 PPO checkpoint 进行推理 |
 
 ## RandomSolver
@@ -67,6 +71,25 @@ choose_action() -> Optional[Dict[str, int]]
 
 ```bash
 python -m scripts.solve --solver random --seed 7 --runs 10
+```
+
+## FIFO、SPT 与 EDD
+
+文件：`solution/priority_rule_solver.py`
+
+三个经典派工规则共用 `PriorityRuleSolver`：
+
+- `FIFO`：等待时间最长的合法作业优先；
+- `SPT`：预计处理时间最短的合法作业优先；
+- `EDD`：所属飞机下一放飞窗口的截止时间最早者优先。
+
+它们不进行搜索或训练，计算量与当前合法动作数量近似线性相关。三者为
+启发式和学习方法提供标准、可解释的调度基线。
+
+```bash
+python -m scripts.solve --solver fifo --runs 10
+python -m scripts.solve --solver spt --runs 10
+python -m scripts.solve --solver edd --runs 10
 ```
 
 ## WaveHeuristicSolver
@@ -121,14 +144,13 @@ python -m scripts.solve --solver heuristic --runs 10
 当前评分顺序是：
 
 ```text
-先减少 missed sorties
-再增加 completed sorties
+先增加 completed sorties
+再减少 missed sorties
 最后减少仿真完成时间
 ```
 
-即源码中的 `(-missed, completed, -time)`。这与项目当前“只最大化完成
-放飞架次”的单目标口径并不完全一致，后续应统一评分函数后再将其作为
-正式实验基线。
+即源码中的 `(completed, -missed, -time)`，与项目最大化完成放飞架次的
+主目标一致。
 
 它不是逐步滚动规划，而是在起点一次性选定完整轨迹。采样数越大，计算
 量和内存消耗越高，而且效果仍受随机轨迹覆盖范围限制。
@@ -137,6 +159,26 @@ python -m scripts.solve --solver heuristic --runs 10
 
 ```bash
 python -m scripts.solve --solver sampled --sampled-samples 30
+```
+
+## CPSATSolver
+
+文件：`solution/cp_sat_solver.py`
+
+这是一个基于 OR-Tools 的滚动批次优化基线：
+
+1. 放飞和回收使用独立资源，因此有合法动作时立即派发；
+2. 对当前可执行的加油与挂弹作业建立 0-1 整数模型；
+3. 约束当前加油服务器、弹药转运车、下层升降机和人员容量；
+4. 优先让更多飞机同时获得完整的加油与挂弹资源；
+5. 在同等条件下优先处理截止时间更近、预计工时更短的飞机；
+6. 执行一个动作后，根据新状态重新求解。
+
+它优化的是当前决策时刻的资源分配，不是整个随机仿真周期的全局最优
+解，因此应称为滚动 CP-SAT 基线。
+
+```bash
+python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 ```
 
 ## RLSolver
@@ -174,8 +216,10 @@ python -m scripts.solve \
 | 场景 | 推荐求解器 |
 |---|---|
 | 检查环境是否可运行 | `random` |
-| 获得快速、可解释的基线 | `heuristic` |
+| 对比经典派工规则 | `fifo`、`spt`、`edd` |
+| 获得快速、较强的规则基线 | `heuristic` |
 | 测试随机搜索上限 | `sampled` |
+| 测试滚动整数资源分配 | `cp_sat` |
 | 评估训练后的神经网络策略 | `rl` |
 
 所有方法应在完全相同的环境参数和随机种子上比较，主指标统一使用
