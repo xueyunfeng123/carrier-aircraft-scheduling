@@ -369,11 +369,15 @@ class CarrierAircraftSchedulingEnv:
         events: List[Event] = []
         while self.event_queue and self.event_queue[0].time == self.time:
             events.append(heapq.heappop(self.event_queue))
-        events.sort(key=lambda item: item.event_type == "wave_start")
+        boundary_events = {"wave_start", "simulation_end"}
+        events.sort(key=lambda item: item.event_type in boundary_events)
 
         for event in events:
             if event.event_type == "wave_start":
                 self._start_wave(int(event.time / self.wave_interval))
+                continue
+            if event.event_type == "simulation_end":
+                self._record_missed_sorties(self.current_wave_index, self.active_launch_group)
                 continue
 
             aircraft = self.aircraft[event.aircraft_id]
@@ -422,6 +426,7 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.launch_status = 3
                 aircraft.launch_end = self.time
                 aircraft.sorties_completed += 1
+                self.wave_records[-1]["sorties_completed"] += 1
                 aircraft.is_airborne = True
                 aircraft.pending_recovery = False
                 self._release_parking_spot(event.aircraft_id)
@@ -553,9 +558,10 @@ class CarrierAircraftSchedulingEnv:
 
     def _schedule_wave_events(self) -> None:
         wave_index = 1
-        while wave_index * self.wave_interval <= self.simulation_duration:
+        while wave_index * self.wave_interval < self.simulation_duration:
             self._push_event(wave_index * self.wave_interval, "wave_start", -1)
             wave_index += 1
+        self._push_event(self.simulation_duration, "simulation_end", -1)
 
     def _start_wave(self, wave_index: int) -> None:
         if wave_index > self.current_wave_index:
@@ -577,6 +583,7 @@ class CarrierAircraftSchedulingEnv:
                 "time": self.time,
                 "launch_group": self.active_launch_group,
                 "recovery_group": self.active_recovery_group,
+                "sorties_completed": 0,
             }
         )
 

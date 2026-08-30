@@ -147,6 +147,9 @@ Reward = -α·Δt               （时间惩罚，α=1.0）
 5. 循环直到 `time >= simulation_duration`
 6. 输出评估：`total_sorties_completed`、`total_missed_sorties`
 
+`get_wave_records()` 返回每个波次的 `wave_index`、开始时间、放飞组、
+回收组及该波次的 `sorties_completed`。
+
 ---
 
 ## 文件结构

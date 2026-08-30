@@ -200,6 +200,7 @@ Events are stored in a `heapq` priority queue. Current event types are:
 - `ammo_to_assembly_done`
 - `arm_done`
 - `launch_done`
+- `simulation_end`
 
 The four principal status dimensions are `recovery_status`, `fuel_status`,
 `arm_status`, and `launch_status`. Arming additionally uses `arm_stage`.

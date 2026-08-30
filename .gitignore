@@ -1,4 +1,5 @@
 .DS_Store
+~$*.docx
 __pycache__/
 *.py[cod]
 *$py.class
