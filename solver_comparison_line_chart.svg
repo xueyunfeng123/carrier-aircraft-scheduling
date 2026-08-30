@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700">
+  <rect width="1000" height="700" fill="#ffffff"/>
+  <text x="500" y="32" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#111827">Random vs Heuristic Solver Comparison</text>
+
+  <rect x="90" y="70" width="830" height="230" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="505" y="58" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#111827">Mean Sorties Completed</text>
+  <line x1="90" y1="300" x2="920" y2="300" stroke="#374151" stroke-width="1.2"/>
+  <line x1="90" y1="70" x2="90" y2="300" stroke="#374151" stroke-width="1.2"/>
+
+  <line x1="90" y1="251.58" x2="920" y2="251.58" stroke="#e5e7eb"/>
+  <line x1="90" y1="203.16" x2="920" y2="203.16" stroke="#e5e7eb"/>
+  <line x1="90" y1="154.74" x2="920" y2="154.74" stroke="#e5e7eb"/>
+  <line x1="90" y1="106.32" x2="920" y2="106.32" stroke="#e5e7eb"/>
+  <text x="78" y="305" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">130</text>
+  <text x="78" y="255" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">150</text>
+  <text x="78" y="207" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">170</text>
+  <text x="78" y="159" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">190</text>
+  <text x="78" y="110" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">210</text>
+
+  <polyline fill="none" stroke="#2563eb" stroke-width="3" points="90,281.36 297.5,237.54 505,197.35 712.5,136.10 920,88.65"/>
+  <polyline fill="none" stroke="#dc2626" stroke-width="3" points="90,248.66 297.5,201.95 505,161.51 712.5,117.44 920,79.68"/>
+
+  <g fill="#2563eb">
+    <circle cx="90" cy="281.36" r="4"/><circle cx="297.5" cy="237.54" r="4"/><circle cx="505" cy="197.35" r="4"/><circle cx="712.5" cy="136.10" r="4"/><circle cx="920" cy="88.65" r="4"/>
+  </g>
+  <g fill="#dc2626">
+    <circle cx="90" cy="248.66" r="4"/><circle cx="297.5" cy="201.95" r="4"/><circle cx="505" cy="161.51" r="4"/><circle cx="712.5" cy="117.44" r="4"/><circle cx="920" cy="79.68" r="4"/>
+  </g>
+
+  <text x="90" y="323" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">60</text>
+  <text x="297.5" y="323" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">70</text>
+  <text x="505" y="323" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">80</text>
+  <text x="712.5" y="323" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">90</text>
+  <text x="920" y="323" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">100</text>
+  <text x="505" y="348" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#374151">wave_interval</text>
+
+  <rect x="90" y="410" width="830" height="230" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="505" y="390" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#111827">Mean Missed Sorties</text>
+  <line x1="90" y1="640" x2="920" y2="640" stroke="#374151" stroke-width="1.2"/>
+  <line x1="90" y1="410" x2="90" y2="640" stroke="#374151" stroke-width="1.2"/>
+
+  <line x1="90" y1="587.73" x2="920" y2="587.73" stroke="#e5e7eb"/>
+  <line x1="90" y1="535.45" x2="920" y2="535.45" stroke="#e5e7eb"/>
+  <line x1="90" y1="483.18" x2="920" y2="483.18" stroke="#e5e7eb"/>
+  <line x1="90" y1="430.91" x2="920" y2="430.91" stroke="#e5e7eb"/>
+  <text x="78" y="644" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">0</text>
+  <text x="78" y="592" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">25</text>
+  <text x="78" y="540" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">50</text>
+  <text x="78" y="488" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">75</text>
+  <text x="78" y="435" text-anchor="end" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">100</text>
+
+  <polyline fill="none" stroke="#2563eb" stroke-width="3" points="90,427.18 297.5,465.16 505,499.33 712.5,553.02 920,592.75"/>
+  <polyline fill="none" stroke="#dc2626" stroke-width="3" points="90,456.58 297.5,496.98 505,532.11 712.5,569.11 920,602.57"/>
+
+  <g fill="#2563eb">
+    <circle cx="90" cy="427.18" r="4"/><circle cx="297.5" cy="465.16" r="4"/><circle cx="505" cy="499.33" r="4"/><circle cx="712.5" cy="553.02" r="4"/><circle cx="920" cy="592.75" r="4"/>
+  </g>
+  <g fill="#dc2626">
+    <circle cx="90" cy="456.58" r="4"/><circle cx="297.5" cy="496.98" r="4"/><circle cx="505" cy="532.11" r="4"/><circle cx="712.5" cy="569.11" r="4"/><circle cx="920" cy="602.57" r="4"/>
+  </g>
+
+  <text x="90" y="663" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">60</text>
+  <text x="297.5" y="663" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">70</text>
+  <text x="505" y="663" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">80</text>
+  <text x="712.5" y="663" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">90</text>
+  <text x="920" y="663" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#4b5563">100</text>
+  <text x="505" y="688" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" fill="#374151">wave_interval</text>
+
+  <rect x="744" y="18" width="150" height="48" fill="#ffffff" stroke="#d1d5db" rx="4"/>
+  <line x1="762" y1="36" x2="792" y2="36" stroke="#2563eb" stroke-width="3"/>
+  <circle cx="777" cy="36" r="4" fill="#2563eb"/>
+  <text x="802" y="40" font-family="Arial, sans-serif" font-size="13" fill="#111827">random</text>
+  <line x1="762" y1="54" x2="792" y2="54" stroke="#dc2626" stroke-width="3"/>
+  <circle cx="777" cy="54" r="4" fill="#dc2626"/>
+  <text x="802" y="58" font-family="Arial, sans-serif" font-size="13" fill="#111827">heuristic</text>
+</svg>

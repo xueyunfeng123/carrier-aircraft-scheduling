@@ -1,0 +1,4 @@
+# Core heuristic/random solvers have no third-party runtime dependencies.
+#
+# RL training and `--solver rl` require PyTorch:
+torch>=2.0
