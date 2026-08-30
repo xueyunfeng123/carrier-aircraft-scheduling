@@ -69,7 +69,10 @@ class CPSATSolver:
         if recovery_ids:
             aircraft_id = min(
                 recovery_ids,
-                key=lambda item: (self._priority._launch_deadline(item), item),
+                key=lambda item: (
+                    self._priority._action_deadline(ACTION_RECOVERY, item),
+                    item,
+                ),
             )
             return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
 

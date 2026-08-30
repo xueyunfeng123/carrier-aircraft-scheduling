@@ -31,7 +31,8 @@ def main() -> None:
     rows: List[Dict[str, Any]] = []
     print(
         "solver,interval,waves,mean_total,std_total,mean_per_wave,"
-        "completion_rate,mean_worst_wave,mean_missed,mean_runtime_s"
+        "completion_rate,mean_worst_wave,mean_missed,"
+        "mean_recovery_deadline_misses,mean_runtime_s"
     )
     for interval in args.intervals:
         config = dict(DEFAULT_CONFIG)
@@ -48,6 +49,7 @@ def main() -> None:
 
             totals: List[int] = []
             missed: List[int] = []
+            recovery_deadline_misses: List[int] = []
             worst_waves: List[int] = []
             runtimes: List[float] = []
             wave_runs: List[List[int]] = []
@@ -77,6 +79,9 @@ def main() -> None:
                     )
                 totals.append(result["total_sorties_completed"])
                 missed.append(result["total_missed_sorties"])
+                recovery_deadline_misses.append(
+                    result["total_recovery_deadline_misses"]
+                )
                 worst_waves.append(min(wave_counts))
                 wave_runs.append(wave_counts)
 
@@ -97,6 +102,9 @@ def main() -> None:
                 "completion_rate": statistics.mean(totals) / capacity,
                 "mean_worst_wave": statistics.mean(worst_waves),
                 "mean_missed_sorties": statistics.mean(missed),
+                "mean_recovery_deadline_misses": statistics.mean(
+                    recovery_deadline_misses
+                ),
                 "mean_runtime_seconds": statistics.mean(runtimes),
                 "wave_means": ";".join(f"{value:.2f}" for value in wave_means),
             }
@@ -109,6 +117,7 @@ def main() -> None:
                 f"{row['completion_rate']:.4f},"
                 f"{row['mean_worst_wave']:.2f},"
                 f"{row['mean_missed_sorties']:.2f},"
+                f"{row['mean_recovery_deadline_misses']:.2f},"
                 f"{row['mean_runtime_seconds']:.4f}",
                 flush=True,
             )

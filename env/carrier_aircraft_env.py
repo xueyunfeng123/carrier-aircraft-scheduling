@@ -49,6 +49,8 @@ class AircraftRecord:
     fuel_wait: float = 0.0
     arm_wait: float = 0.0
     launch_wait: float = 0.0
+    recovery_deadline: Optional[float] = None
+    recovery_deadline_misses: int = 0
     recovery_start: Optional[float] = None
     recovery_end: Optional[float] = None
     park_start: Optional[float] = None
@@ -84,6 +86,8 @@ class AircraftRecord:
             self.fuel_wait,
             self.arm_wait,
             self.launch_wait,
+            self.recovery_deadline if self.recovery_deadline is not None else -1.0,
+            self.recovery_deadline_misses,
         ]
 
 
@@ -102,11 +106,13 @@ class CarrierAircraftSchedulingEnv:
         if self.num_parking_spots < self.num_aircraft:
             raise ValueError("num_parking_spots must be at least num_aircraft")
         self.rng = random.Random()
+        self.recovery_rng = random.Random()
         self.reset()
 
     def reset(self, seed: Optional[int] = None) -> Dict[str, Any]:
         if seed is not None:
             self.rng.seed(seed)
+            self.recovery_rng.seed(seed + 1_000_003)
 
         self.time = 0.0
         self.event_sequence = 0
@@ -293,6 +299,8 @@ class CarrierAircraftSchedulingEnv:
                     "missed_sorties": item.missed_sorties,
                     "is_airborne": item.is_airborne,
                     "pending_recovery": item.pending_recovery,
+                    "recovery_deadline": item.recovery_deadline,
+                    "recovery_deadline_misses": item.recovery_deadline_misses,
                     "arm_quantity_required": item.arm_quantity_required,
                     "arm_stage": item.arm_stage,
                     "recovery_start": item.recovery_start,
@@ -322,17 +330,26 @@ class CarrierAircraftSchedulingEnv:
     def get_evaluation_metrics(self) -> Dict[str, Any]:
         total_sorties = sum(aircraft.sorties_completed for aircraft in self.aircraft)
         total_missed = sum(aircraft.missed_sorties for aircraft in self.aircraft)
+        total_recovery_deadline_misses = sum(
+            aircraft.recovery_deadline_misses
+            for aircraft in self.aircraft
+        )
         group_metrics = {}
         for group in ("A", "B"):
             group_aircraft = [aircraft for aircraft in self.aircraft if aircraft.group == group]
             group_metrics[group] = {
                 "sorties_completed": sum(aircraft.sorties_completed for aircraft in group_aircraft),
                 "missed_sorties": sum(aircraft.missed_sorties for aircraft in group_aircraft),
+                "recovery_deadline_misses": sum(
+                    aircraft.recovery_deadline_misses
+                    for aircraft in group_aircraft
+                ),
             }
         return {
             "simulation_duration": self.simulation_duration,
             "total_sorties_completed": total_sorties,
             "total_missed_sorties": total_missed,
+            "total_recovery_deadline_misses": total_recovery_deadline_misses,
             "group_metrics": group_metrics,
         }
 
@@ -381,10 +398,26 @@ class CarrierAircraftSchedulingEnv:
                 continue
 
             aircraft = self.aircraft[event.aircraft_id]
-            if event.event_type == "recover_done":
+            if event.event_type == "recovery_deadline":
+                if aircraft.pending_recovery and aircraft.recovery_status == 0:
+                    aircraft.pending_recovery = False
+                    aircraft.recovery_deadline = None
+                    aircraft.recovery_deadline_misses += 1
+                    self.wave_records[-1]["recovery_deadline_misses"] += 1
+                    self._push_event(
+                        self.time + float(self.config["recovery_retry_delay"]),
+                        "recovery_retry_ready",
+                        event.aircraft_id,
+                    )
+            elif event.event_type == "recovery_retry_ready":
+                if aircraft.is_airborne and aircraft.recovery_status == 0:
+                    aircraft.pending_recovery = True
+                    self._schedule_recovery_deadline(event.aircraft_id)
+            elif event.event_type == "recover_done":
                 aircraft.recovery_status = 2
                 aircraft.recovery_end = self.time
                 aircraft.pending_recovery = False
+                aircraft.recovery_deadline = None
                 aircraft.is_airborne = False
                 aircraft.launch_status = 0
                 aircraft.parking_status = 1
@@ -433,6 +466,7 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.parking_status = 0
                 aircraft.spot_id = -1
                 aircraft.recovery_status = 0
+                aircraft.recovery_deadline = None
                 aircraft.fuel_status = 0
                 aircraft.arm_status = 0
                 aircraft.arm_stage = 0
@@ -460,6 +494,23 @@ class CarrierAircraftSchedulingEnv:
         aircraft.recovery_start = self.time
         self.free_recovery_channels -= 1
         self._push_event(self.time + float(self.config["recovery_time"]), "recover_done", aircraft_id)
+
+    def _schedule_recovery_deadline(self, aircraft_id: int) -> None:
+        aircraft = self.aircraft[aircraft_id]
+        if not bool(self.config["enable_recovery_deadlines"]):
+            aircraft.recovery_deadline = None
+            return
+
+        low = float(self.config["recovery_deadline_min"])
+        high = float(self.config["recovery_deadline_max"])
+        if high < low:
+            raise ValueError("recovery_deadline_max must be >= recovery_deadline_min")
+        aircraft.recovery_deadline = self.time + self.recovery_rng.uniform(low, high)
+        self._push_event(
+            aircraft.recovery_deadline,
+            "recovery_deadline",
+            aircraft_id,
+        )
 
     def _start_fueling(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
@@ -526,8 +577,7 @@ class CarrierAircraftSchedulingEnv:
         candidates = {"R": [], "F": [], "M": [], "L": []}
         for aircraft_id, aircraft in enumerate(self.aircraft):
             if (
-                aircraft.group == self.active_recovery_group
-                and aircraft.pending_recovery
+                aircraft.pending_recovery
                 and aircraft.recovery_status == 0
             ):
                 candidates["R"].append(aircraft_id)
@@ -572,10 +622,12 @@ class CarrierAircraftSchedulingEnv:
         self.active_recovery_group = None if wave_index == 0 else ("B" if wave_index % 2 == 0 else "A")
 
         if self.active_recovery_group is not None:
-            for aircraft in self.aircraft:
+            for aircraft_id, aircraft in enumerate(self.aircraft):
                 if aircraft.group == self.active_recovery_group and aircraft.is_airborne:
-                    aircraft.pending_recovery = True
-                    aircraft.recovery_status = 0
+                    if not aircraft.pending_recovery:
+                        aircraft.pending_recovery = True
+                        aircraft.recovery_status = 0
+                        self._schedule_recovery_deadline(aircraft_id)
 
         self.wave_records.append(
             {
@@ -584,6 +636,7 @@ class CarrierAircraftSchedulingEnv:
                 "launch_group": self.active_launch_group,
                 "recovery_group": self.active_recovery_group,
                 "sorties_completed": 0,
+                "recovery_deadline_misses": 0,
             }
         )
 
@@ -790,6 +843,7 @@ class CarrierAircraftSchedulingEnv:
             "launched": launched,
             "total_sorties_completed": metrics["total_sorties_completed"],
             "total_missed_sorties": metrics["total_missed_sorties"],
+            "total_recovery_deadline_misses": metrics["total_recovery_deadline_misses"],
             "resources": self.get_state()["resources"],
             "invalid_action": invalid_action,
             "message": message,

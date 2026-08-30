@@ -80,6 +80,7 @@ def run_episode(
         "started_actions": started_actions,
         "total_sorties_completed": metrics["total_sorties_completed"],
         "total_missed_sorties": metrics["total_missed_sorties"],
+        "total_recovery_deadline_misses": metrics["total_recovery_deadline_misses"],
         "group_metrics": metrics["group_metrics"],
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
@@ -124,6 +125,7 @@ def write_runs_csv(path: str, results: List[Dict[str, Any]]) -> None:
                 "simulation_time": f"{result['simulation_time']:.6f}",
                 "total_sorties_completed": result["total_sorties_completed"],
                 "total_missed_sorties": result["total_missed_sorties"],
+                "total_recovery_deadline_misses": result["total_recovery_deadline_misses"],
                 "total_reward": f"{result['total_reward']:.6f}",
                 "A_sorties": result["group_metrics"]["A"]["sorties_completed"],
                 "A_missed": result["group_metrics"]["A"]["missed_sorties"],
@@ -211,7 +213,10 @@ def main() -> None:
         for run_id in range(args.runs)
     ]
 
-    print("run,solver,seed,done,steps,simulation_time,total_sorties_completed,total_missed_sorties,total_reward")
+    print(
+        "run,solver,seed,done,steps,simulation_time,total_sorties_completed,"
+        "total_missed_sorties,total_recovery_deadline_misses,total_reward"
+    )
     for run_id, result in enumerate(results, start=1):
         print(
             f"{run_id},"
@@ -222,14 +227,20 @@ def main() -> None:
             f"{result['simulation_time']:.2f},"
             f"{result['total_sorties_completed']},"
             f"{result['total_missed_sorties']},"
+            f"{result['total_recovery_deadline_misses']},"
             f"{result['total_reward']:.2f}"
         )
 
     if args.runs > 1:
         mean_completed = statistics.mean(result["total_sorties_completed"] for result in results)
         mean_missed = statistics.mean(result["total_missed_sorties"] for result in results)
+        mean_recovery_missed = statistics.mean(
+            result["total_recovery_deadline_misses"]
+            for result in results
+        )
         print(f"mean_total_sorties_completed: {mean_completed:.2f}")
         print(f"mean_total_missed_sorties: {mean_missed:.2f}")
+        print(f"mean_total_recovery_deadline_misses: {mean_recovery_missed:.2f}")
     best = max(
         results,
         key=lambda item: (

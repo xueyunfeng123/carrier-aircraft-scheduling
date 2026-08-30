@@ -84,9 +84,12 @@ class WaveHeuristicSolver:
             aircraft_id,
         )
 
-    def _recovery_priority(self, aircraft_id: int) -> Tuple[int, int, int, int]:
+    def _recovery_priority(self, aircraft_id: int) -> Tuple[float, int, int, int, int]:
         aircraft = self.env.aircraft[aircraft_id]
         return (
+            aircraft.recovery_deadline
+            if aircraft.recovery_deadline is not None
+            else float("inf"),
             aircraft.sorties_completed,
             -aircraft.arm_quantity_required,
             -aircraft.missed_sorties,

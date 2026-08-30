@@ -59,7 +59,7 @@ class PriorityRuleSolver:
         high_level, aircraft_id = candidate
         return (
             self._expected_action_duration(high_level, aircraft_id),
-            self._launch_deadline(aircraft_id),
+            self._action_deadline(high_level, aircraft_id),
             aircraft_id,
             high_level,
         )
@@ -67,10 +67,16 @@ class PriorityRuleSolver:
     def _edd_key(self, candidate: Tuple[int, int]) -> Tuple[float, int, int]:
         high_level, aircraft_id = candidate
         return (
-            self._launch_deadline(aircraft_id),
+            self._action_deadline(high_level, aircraft_id),
             aircraft_id,
             high_level,
         )
+
+    def _action_deadline(self, high_level: int, aircraft_id: int) -> float:
+        aircraft = self.env.aircraft[aircraft_id]
+        if high_level == ACTION_RECOVERY and aircraft.recovery_deadline is not None:
+            return aircraft.recovery_deadline
+        return self._launch_deadline(aircraft_id)
 
     def _waiting_time(self, high_level: int, aircraft_id: int) -> float:
         aircraft = self.env.aircraft[aircraft_id]

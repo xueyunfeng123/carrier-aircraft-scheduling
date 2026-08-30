@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 
 
-AIRCRAFT_FEATURE_DIM = 18
+AIRCRAFT_FEATURE_DIM = 20
 GLOBAL_FEATURE_DIM = 18
 
 
@@ -125,6 +125,8 @@ def _normalize_aircraft(
         row[15] / simulation_duration,
         row[16] / simulation_duration,
         row[17] / simulation_duration,
+        _scale_nonnegative(row[18], simulation_duration),
+        row[19] / max(1.0, num_aircraft),
     ]
 
 
@@ -176,4 +178,3 @@ def _scale_nonnegative(value: float, divisor: float) -> float:
     if value < 0:
         return -1.0
     return value / max(1.0, divisor)
-
