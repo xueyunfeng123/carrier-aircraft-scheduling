@@ -197,12 +197,13 @@ conda activate carrier-aircraft-scheduling
 环境场景定义位于 `env/scenario.py`，与求解器实现分离。
 
 - `project_core`：当前可执行的 A/B 多波次资源调度环境；
-- `paper_yoon_2023`：Yoon et al. (2023) 航母出动生成 DES 的已公开
-  参数和缺失参数清单。
+- `paper_yoon_2023`：Yoon et al. (2023) 航母出动生成 DES 的结构复现，
+  由独立的 `YoonSortieGenerationEnv` 执行。
 
-`paper_yoon_2023` 当前是结构化复现规格，尚未冒充为可执行环境。论文未
-公开完整甲板邻接矩阵、边距离、移动速度和 FlyPro 明细，补齐这些参数前
-不能进行精确数值复现。
+论文未公开完整甲板邻接矩阵、边距离、移动速度和 FlyPro 明细，因此
+`paper_yoon_2023` 明确标记为
+`structural_replication_with_explicit_assumptions`，不能称为精确数值复现。
+现有 A/B 求解器仍只连接 `project_core`；论文基线先使用其预定运行策略。
 
 ```bash
 # 查看当前项目场景
@@ -212,6 +213,12 @@ python -m scripts.inspect_scenario --profile project_core
 python -m scripts.inspect_scenario \
     --profile paper_yoon_2023 \
     --case case_4_1
+
+# 运行 8 个论文案例的结构复现
+python -m scripts.run_yoon_baseline \
+    --runs 100 \
+    --workers 8 \
+    --output outputs/yoon_2023_structural_replication.csv
 ```
 
 详细复现边界见

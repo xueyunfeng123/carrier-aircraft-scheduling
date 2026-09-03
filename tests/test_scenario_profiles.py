@@ -17,6 +17,11 @@ from env.scenario import (
     build_project_core_profile,
     build_yoon_2023_profile,
 )
+from env.yoon_sortie_env import (
+    YoonReplicationAssumptions,
+    YoonSortieGenerationEnv,
+    build_yoon_assumed_graph,
+)
 
 
 class DurationDistributionTest(unittest.TestCase):
@@ -124,6 +129,64 @@ class EnvironmentMonitoringTest(unittest.TestCase):
     def test_non_executable_profile_is_rejected_explicitly(self) -> None:
         with self.assertRaisesRegex(ValueError, "currently executes only"):
             CarrierAircraftSchedulingEnv({"scenario_profile": "paper_yoon_2023"})
+
+
+class YoonExecutableEnvironmentTest(unittest.TestCase):
+    def test_assumed_graph_uses_published_section_capacities(self) -> None:
+        profile = build_yoon_2023_profile("case_2_1")
+        graph = build_yoon_assumed_graph(profile)
+        location_types = [node.location_type for node in graph.nodes]
+
+        self.assertEqual(location_types.count("parking_bow"), 8)
+        self.assertEqual(location_types.count("parking_stern"), 6)
+        self.assertEqual(location_types.count("pathway"), 19)
+        self.assertEqual(location_types.count("runway"), 8)
+        self.assertEqual(location_types.count("lift"), 2)
+        self.assertTrue(
+            math.isfinite(graph.shortest_distance("bow_1", "runway_1"))
+        )
+
+    def test_structural_replication_is_deterministic_for_fixed_seed(self) -> None:
+        assumptions = YoonReplicationAssumptions(horizon_minutes_override=400.0)
+        first = YoonSortieGenerationEnv("case_4_1", assumptions)
+        second = YoonSortieGenerationEnv("case_4_1", assumptions)
+
+        first_metrics = first.run(seed=10007)
+        second_metrics = second.run(seed=10007)
+
+        self.assertEqual(first_metrics, second_metrics)
+        self.assertEqual(first.get_event_log(), second.get_event_log())
+        first.validate_invariants()
+        second.validate_invariants()
+
+    def test_all_published_cases_execute_without_capacity_violations(self) -> None:
+        assumptions = YoonReplicationAssumptions(horizon_minutes_override=400.0)
+        for case_id in YOON_2023_CASES:
+            with self.subTest(case=case_id):
+                env = YoonSortieGenerationEnv(case_id, assumptions)
+                metrics = env.run(seed=7)
+                env.validate_invariants()
+                self.assertGreater(metrics["scheduled_fixed_missions"], 0)
+                self.assertGreaterEqual(metrics["fixed_mission_success_rate"], 0.0)
+                self.assertLessEqual(metrics["fixed_mission_success_rate"], 1.0)
+
+    def test_zero_preparation_lead_causes_mission_cancellation(self) -> None:
+        assumptions = YoonReplicationAssumptions(
+            preparation_lead_minutes=0.0,
+            horizon_minutes_override=250.0,
+        )
+        env = YoonSortieGenerationEnv("case_4_1", assumptions)
+        metrics = env.run(seed=7)
+
+        self.assertGreater(metrics["cancelled_fixed_missions"], 0)
+
+    def test_planned_maintenance_occurs_after_repeated_sorties(self) -> None:
+        env = YoonSortieGenerationEnv("case_4_1")
+        metrics = env.run(seed=7)
+        event_types = [item["event_type"] for item in env.get_event_log()]
+
+        self.assertGreater(metrics["maintenance_completed"], 0)
+        self.assertIn("maintenance_start", event_types)
 
 
 if __name__ == "__main__":

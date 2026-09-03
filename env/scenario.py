@@ -157,26 +157,65 @@ class DeckGraph:
         except KeyError as exc:
             raise ValueError(f"unknown deck node: {node_id}") from exc
 
-    def shortest_distance(self, source: str, target: str) -> float:
+    def edge_distance(self, source: str, target: str) -> float:
         self.node(source)
         self.node(target)
+        for neighbor, distance in self._adjacency[source]:
+            if neighbor == target:
+                return distance
+        raise ValueError(f"nodes are not directly connected: {source} -> {target}")
+
+    def shortest_distance(self, source: str, target: str) -> float:
+        distance, _ = self._shortest_route(source, target)
+        return distance
+
+    def shortest_path(self, source: str, target: str) -> Tuple[str, ...]:
+        _, path = self._shortest_route(source, target)
+        return path
+
+    def shortest_route_avoiding(
+        self,
+        source: str,
+        target: str,
+        blocked_nodes: Iterable[str],
+    ) -> Tuple[float, Tuple[str, ...]]:
+        return self._shortest_route(source, target, frozenset(blocked_nodes))
+
+    def _shortest_route(
+        self,
+        source: str,
+        target: str,
+        blocked_nodes: frozenset[str] = frozenset(),
+    ) -> Tuple[float, Tuple[str, ...]]:
+        self.node(source)
+        self.node(target)
+        if source in blocked_nodes or target in blocked_nodes:
+            return math.inf, ()
         if source == target:
-            return 0.0
+            return 0.0, (source,)
 
         distances = {source: 0.0}
+        predecessors: Dict[str, str] = {}
         queue = [(0.0, source)]
         while queue:
             distance, node_id = heapq.heappop(queue)
             if node_id == target:
-                return distance
+                path = [target]
+                while path[-1] != source:
+                    path.append(predecessors[path[-1]])
+                path.reverse()
+                return distance, tuple(path)
             if distance > distances[node_id]:
                 continue
             for neighbor, weight in self._adjacency[node_id]:
+                if neighbor in blocked_nodes:
+                    continue
                 next_distance = distance + weight
                 if next_distance < distances.get(neighbor, math.inf):
                     distances[neighbor] = next_distance
+                    predecessors[neighbor] = node_id
                     heapq.heappush(queue, (next_distance, neighbor))
-        return math.inf
+        return math.inf, ()
 
     def as_dict(self) -> Dict[str, Any]:
         return {

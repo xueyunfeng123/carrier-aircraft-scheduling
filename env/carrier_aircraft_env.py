@@ -106,8 +106,8 @@ class CarrierAircraftSchedulingEnv:
         if scenario_profile != PROJECT_CORE_PROFILE:
             raise ValueError(
                 "CarrierAircraftSchedulingEnv currently executes only the "
-                f"{PROJECT_CORE_PROFILE!r} profile; use env.scenario to inspect "
-                "paper baseline specifications"
+                f"{PROJECT_CORE_PROFILE!r} profile; use YoonSortieGenerationEnv "
+                "for the paper baseline"
             )
         self.scenario_profile = build_project_core_profile(self.config)
         self.rng = random.Random()

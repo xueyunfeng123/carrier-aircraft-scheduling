@@ -157,8 +157,10 @@ evaluation scenarios.
 | `env/config.py` | Base capacities, durations, reward constants, and action IDs |
 | `env/scenario.py` | Solver-independent scenario, process, mission-plan, duration-distribution, and deck-graph definitions |
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
+| `env/yoon_sortie_env.py` | Executable Yoon 2023 structural replication with mission, movement, runway, lift, hangar, and maintenance events |
 | `scripts/solve.py` | Unified command-line runner and CSV export |
 | `scripts/inspect_scenario.py` | Read-only exporter for project and paper scenario definitions |
+| `scripts/run_yoon_baseline.py` | Multi-case replication runner with confidence intervals and paper-result comparison |
 | `solution/random_solver.py` | Uniform random legal-action baseline |
 | `solution/priority_rule_solver.py` | FIFO, SPT, and EDD dispatching-rule baselines |
 | `solution/heuristic_solver.py` | Wave/deadline-aware slack heuristic |
@@ -300,17 +302,26 @@ an explicit decision.
 - B0.1 adds a solver-independent scenario layer, all eight published case
   definitions, published SGP/FlyPro parameters, explicit missing-parameter
   records, a weighted deck-graph primitive, event logging, and SGR metrics.
-- `project_core` remains the only executable scheduling profile in B0.1.
-  `paper_yoon_2023` is intentionally rejected by the existing A/B environment
-  until the paper's mission, location-occupancy, movement, lift, and
-  maintenance semantics are implemented.
+- B0.2 adds a dedicated `YoonSortieGenerationEnv` with fixed-wing and SAR
+  mission events, cancellation deadlines, node-level location occupancy,
+  stepwise movement, runway priority, hangar/lift flows, and planned
+  maintenance after every two sorties.
+- The paper profile is an executable structural replication, not an exact
+  numerical reproduction. Missing graph weights, movement speeds, full FlyPro,
+  and policy details are isolated in `YoonReplicationAssumptions`.
+- The existing `CarrierAircraftSchedulingEnv` continues to execute only
+  `project_core`; paper and project task semantics are not silently mixed.
 - The project-core parking-time rule is represented as an equivalent star
   graph, preserving the historical benchmark exactly.
 - Fixed `seed=10007`, 60-minute, 12-wave regression totals remain:
   Random 141, FIFO 143, SPT 140, EDD 143, Heuristic 152, SampledRandom 144,
   and CP-SAT 140.
-- Current decision: continue B0.2 on this branch; do not merge before the
-  executable paper profile and eight-case validation are reviewed.
+- A 100-run eight-case study is stored in
+  `outputs/yoon_2023_structural_replication.csv`. The 16-aircraft large-layout
+  cases approach the published rates, while 20-aircraft cases remain much
+  lower; this unresolved discrepancy must be treated as a replication gap.
+- Current decision: continue B0.3 parameter identification and sensitivity
+  analysis on this branch; do not merge before the replication gap is reviewed.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

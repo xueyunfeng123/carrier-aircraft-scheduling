@@ -12,6 +12,11 @@ from env.scenario import (
     build_project_core_profile,
     build_yoon_2023_profile,
 )
+from env.yoon_sortie_env import (
+    YoonReplicationAssumptions,
+    YoonSortieGenerationEnv,
+    build_yoon_assumed_graph,
+)
 
 __all__ = [
     "ACTION_TO_INDEX",
@@ -24,6 +29,9 @@ __all__ = [
     "ScenarioProfile",
     "YOON_2023_CASES",
     "YOON_2023_PROFILE",
+    "YoonReplicationAssumptions",
+    "YoonSortieGenerationEnv",
     "build_project_core_profile",
+    "build_yoon_assumed_graph",
     "build_yoon_2023_profile",
 ]
