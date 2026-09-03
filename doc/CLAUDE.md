@@ -155,8 +155,10 @@ evaluation scenarios.
 | File | Role |
 |---|---|
 | `env/config.py` | Base capacities, durations, reward constants, and action IDs |
+| `env/scenario.py` | Solver-independent scenario, process, mission-plan, duration-distribution, and deck-graph definitions |
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
 | `scripts/solve.py` | Unified command-line runner and CSV export |
+| `scripts/inspect_scenario.py` | Read-only exporter for project and paper scenario definitions |
 | `solution/random_solver.py` | Uniform random legal-action baseline |
 | `solution/priority_rule_solver.py` | FIFO, SPT, and EDD dispatching-rule baselines |
 | `solution/heuristic_solver.py` | Wave/deadline-aware slack heuristic |
@@ -174,6 +176,7 @@ evaluation scenarios.
 | `scripts/random_policy_test.py` | Legacy random-policy timing report |
 | `scripts/benchmark_non_rl.py` | Reproducible benchmark for non-RL solvers and an optional RL checkpoint |
 | `outputs/` | Tracked baseline CSV results and comparison figures |
+| `doc/yoon_2023_environment_spec.md` | Traceable Yoon 2023 parameters, missing data, replication scope, and acceptance criteria |
 | `doc/` | Requirements, modeling notes, and project guidance |
 | `tests/` | Standard-library unit and solver integration tests |
 
@@ -261,8 +264,9 @@ there is currently no configured linter.
 
 ## Environment constraint experiments
 
-Two completed experiments are intentionally kept outside `main`. Do not merge
-or cherry-pick them without an explicit decision.
+Two completed constraint experiments and one active paper-baseline experiment
+are intentionally kept outside `main`. Do not merge or cherry-pick them without
+an explicit decision.
 
 ### `experiment/recovery-deadlines`
 
@@ -287,6 +291,26 @@ or cherry-pick them without an explicit decision.
   12.3 to 16.0 completed launches over 12 waves. The effect is small or absent
   at longer wave intervals.
 - Current decision: retain for review, not merged.
+
+### `experiment/yoon-sgp-baseline`
+
+- Base commit: `4bd07c8`.
+- Primary reference: Yoon et al. (2023), *Discrete Event Simulation of
+  Aircraft Sortie Generation on an Aircraft Carrier*.
+- B0.1 adds a solver-independent scenario layer, all eight published case
+  definitions, published SGP/FlyPro parameters, explicit missing-parameter
+  records, a weighted deck-graph primitive, event logging, and SGR metrics.
+- `project_core` remains the only executable scheduling profile in B0.1.
+  `paper_yoon_2023` is intentionally rejected by the existing A/B environment
+  until the paper's mission, location-occupancy, movement, lift, and
+  maintenance semantics are implemented.
+- The project-core parking-time rule is represented as an equivalent star
+  graph, preserving the historical benchmark exactly.
+- Fixed `seed=10007`, 60-minute, 12-wave regression totals remain:
+  Random 141, FIFO 143, SPT 140, EDD 143, Heuristic 152, SampledRandom 144,
+  and CP-SAT 140.
+- Current decision: continue B0.2 on this branch; do not merge before the
+  executable paper profile and eight-case validation are reviewed.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

@@ -112,6 +112,7 @@ def main() -> None:
             ]
             row = {
                 "solver": args.rl_label if solver_name == "rl" else solver_name,
+                "scenario_profile": config["scenario_profile"],
                 "wave_interval": float(interval),
                 "simulation_duration": config["simulation_duration"],
                 "waves": args.waves,

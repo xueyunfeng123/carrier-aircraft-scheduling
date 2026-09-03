@@ -16,6 +16,7 @@ ACTION_TO_INDEX = {value: key for key, value in HIGH_LEVEL_ACTIONS.items()}
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    "scenario_profile": "project_core",
     "num_aircraft": 40,
     "group_size": 20,
     "num_parking_spots": 45,

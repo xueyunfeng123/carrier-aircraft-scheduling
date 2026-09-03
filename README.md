@@ -192,6 +192,31 @@ conda env create --file environment.yml
 conda activate carrier-aircraft-scheduling
 ```
 
+## 场景配置
+
+环境场景定义位于 `env/scenario.py`，与求解器实现分离。
+
+- `project_core`：当前可执行的 A/B 多波次资源调度环境；
+- `paper_yoon_2023`：Yoon et al. (2023) 航母出动生成 DES 的已公开
+  参数和缺失参数清单。
+
+`paper_yoon_2023` 当前是结构化复现规格，尚未冒充为可执行环境。论文未
+公开完整甲板邻接矩阵、边距离、移动速度和 FlyPro 明细，补齐这些参数前
+不能进行精确数值复现。
+
+```bash
+# 查看当前项目场景
+python -m scripts.inspect_scenario --profile project_core
+
+# 查看 Yoon 2023 的指定案例
+python -m scripts.inspect_scenario \
+    --profile paper_yoon_2023 \
+    --case case_4_1
+```
+
+详细复现边界见
+[`doc/yoon_2023_environment_spec.md`](doc/yoon_2023_environment_spec.md)。
+
 ## 运行
 
 激活环境后，从项目根目录执行：
@@ -240,8 +265,15 @@ python -m scripts.solve \
     --runs 10 \
     --runs-csv outputs/runs.csv \
     --timing-csv outputs/timing.csv \
-    --missed-csv outputs/missed.csv
+    --missed-csv outputs/missed.csv \
+    --event-log-csv outputs/events.csv
 ```
+
+环境额外报告：
+
+- `sortie_generation_rate_per_hour`：固定时域内每小时完成的放飞架次；
+- `sortie_completion_rate`：已完成架次占当前已开始波次机会数的比例；
+- `get_event_log()`：波次、作业开始/完成和 missed sortie 的事件记录。
 
 ## 动作格式
 

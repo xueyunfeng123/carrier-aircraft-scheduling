@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from env.config import ACTION_TO_INDEX, DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
+from env.scenario import PROJECT_CORE_PROFILE, build_project_core_profile
 
 
 @dataclass(order=True)
@@ -101,6 +102,14 @@ class CarrierAircraftSchedulingEnv:
         self.num_parking_spots = int(self.config["num_parking_spots"])
         if self.num_parking_spots < self.num_aircraft:
             raise ValueError("num_parking_spots must be at least num_aircraft")
+        scenario_profile = str(self.config.get("scenario_profile", PROJECT_CORE_PROFILE))
+        if scenario_profile != PROJECT_CORE_PROFILE:
+            raise ValueError(
+                "CarrierAircraftSchedulingEnv currently executes only the "
+                f"{PROJECT_CORE_PROFILE!r} profile; use env.scenario to inspect "
+                "paper baseline specifications"
+            )
+        self.scenario_profile = build_project_core_profile(self.config)
         self.rng = random.Random()
         self.reset()
 
@@ -116,6 +125,7 @@ class CarrierAircraftSchedulingEnv:
         self.current_wave_index = 0
         self.active_launch_group = "A"
         self.active_recovery_group: Optional[str] = None
+        self.event_log: List[Dict[str, Any]] = []
         self.wave_records: List[Dict[str, Any]] = []
         self.missed_sortie_records: List[Dict[str, Any]] = []
         self.parking_transfer_times = self._build_parking_transfer_times()
@@ -236,6 +246,10 @@ class CarrierAircraftSchedulingEnv:
                 "active_recovery_group": self.active_recovery_group,
                 "next_wave_time": self._next_wave_time(),
             },
+            "scenario": {
+                "name": self.scenario_profile.name,
+                "fidelity": self.scenario_profile.fidelity,
+            },
         }
 
     def get_action_mask(self, high_level_action: Optional[int] = None) -> Dict[str, Any]:
@@ -319,9 +333,14 @@ class CarrierAircraftSchedulingEnv:
     def get_missed_sortie_records(self) -> List[Dict[str, Any]]:
         return list(self.missed_sortie_records)
 
+    def get_event_log(self) -> List[Dict[str, Any]]:
+        return [dict(item) for item in self.event_log]
+
     def get_evaluation_metrics(self) -> Dict[str, Any]:
         total_sorties = sum(aircraft.sorties_completed for aircraft in self.aircraft)
         total_missed = sum(aircraft.missed_sorties for aircraft in self.aircraft)
+        horizon_hours = self.simulation_duration / 60.0
+        sortie_opportunities = len(self.wave_records) * self.group_size
         group_metrics = {}
         for group in ("A", "B"):
             group_aircraft = [aircraft for aircraft in self.aircraft if aircraft.group == group]
@@ -333,6 +352,14 @@ class CarrierAircraftSchedulingEnv:
             "simulation_duration": self.simulation_duration,
             "total_sorties_completed": total_sorties,
             "total_missed_sorties": total_missed,
+            "sortie_generation_rate_per_hour": (
+                total_sorties / horizon_hours if horizon_hours > 0 else 0.0
+            ),
+            "sortie_completion_rate": (
+                total_sorties / sortie_opportunities
+                if sortie_opportunities > 0
+                else 0.0
+            ),
             "group_metrics": group_metrics,
         }
 
@@ -378,9 +405,11 @@ class CarrierAircraftSchedulingEnv:
                 continue
             if event.event_type == "simulation_end":
                 self._record_missed_sorties(self.current_wave_index, self.active_launch_group)
+                self._log_event("simulation_end")
                 continue
 
             aircraft = self.aircraft[event.aircraft_id]
+            self._log_event(event.event_type, event.aircraft_id)
             if event.event_type == "recover_done":
                 aircraft.recovery_status = 2
                 aircraft.recovery_end = self.time
@@ -459,6 +488,7 @@ class CarrierAircraftSchedulingEnv:
         aircraft.recovery_status = 1
         aircraft.recovery_start = self.time
         self.free_recovery_channels -= 1
+        self._log_event("recover_start", aircraft_id)
         self._push_event(self.time + float(self.config["recovery_time"]), "recover_done", aircraft_id)
 
     def _start_fueling(self, aircraft_id: int) -> None:
@@ -469,6 +499,7 @@ class CarrierAircraftSchedulingEnv:
         aircraft.fuel_remaining = duration
         self.free_fuel_servers -= 1
         self.free_personnel -= int(self.config["fuel_personnel_required"])
+        self._log_event("fuel_start", aircraft_id, duration=duration)
         self._push_event(self.time + duration, "fuel_done", aircraft_id)
 
     def _start_arming(self, aircraft_id: int) -> None:
@@ -490,6 +521,12 @@ class CarrierAircraftSchedulingEnv:
         self.free_ammo_transport_vehicles -= 1
         self.free_lower_weapon_lifts -= 1
         self.free_personnel -= int(self.config["arm_personnel_required"])
+        self._log_event(
+            "arm_start",
+            aircraft_id,
+            first_stage_duration=first_stage_duration,
+            deck_stage_duration=deck_stage_duration,
+        )
         self._push_event(self.time + first_stage_duration, "ammo_to_assembly_done", aircraft_id)
 
     def _start_launch(self, aircraft_id: int) -> None:
@@ -497,6 +534,7 @@ class CarrierAircraftSchedulingEnv:
         aircraft.launch_status = 2
         aircraft.launch_start = self.time
         self.free_launch_channels -= 1
+        self._log_event("launch_start", aircraft_id)
         self._push_event(self.time + float(self.config["launch_time"]), "launch_done", aircraft_id)
 
     def _try_start_waiting_deck_arming(self) -> None:
@@ -520,6 +558,7 @@ class CarrierAircraftSchedulingEnv:
         aircraft.deck_arm_start = self.time
         self.free_arm_vehicles -= 1
         self.free_upper_weapon_lifts -= 1
+        self._log_event("deck_arm_start", aircraft_id, duration=duration)
         self._push_event(self.time + duration, "arm_done", aircraft_id)
 
     def _candidate_sets(self) -> Dict[str, List[int]]:
@@ -586,6 +625,12 @@ class CarrierAircraftSchedulingEnv:
                 "sorties_completed": 0,
             }
         )
+        self._log_event(
+            "wave_start",
+            launch_group=self.active_launch_group,
+            recovery_group=self.active_recovery_group,
+            wave_index=wave_index,
+        )
 
     def _record_missed_sorties(self, wave_index: int, group: str) -> None:
         for aircraft_id, aircraft in enumerate(self.aircraft):
@@ -605,6 +650,12 @@ class CarrierAircraftSchedulingEnv:
                         "aircraft_id": aircraft_id,
                     }
                 )
+                self._log_event(
+                    "missed_sortie",
+                    aircraft_id,
+                    group=group,
+                    wave_index=wave_index,
+                )
 
     def _next_wave_time(self) -> Optional[float]:
         next_time = (self.current_wave_index + 1) * self.wave_interval
@@ -613,16 +664,13 @@ class CarrierAircraftSchedulingEnv:
         return next_time
 
     def _build_parking_transfer_times(self) -> List[float]:
-        times = []
-        base = float(self.config["parking_base_transfer_time"])
-        step = float(self.config["parking_ring_time_step"])
-        for spot_id in range(self.num_parking_spots):
-            if spot_id == 0:
-                layer = 0
-            else:
-                layer = (spot_id + 1) // 2
-            times.append(base + layer * step)
-        return times
+        graph = self.scenario_profile.deck_graph
+        if graph is None:
+            raise RuntimeError("project_core scenario must define a deck graph")
+        return [
+            graph.shortest_distance(f"parking_{spot_id}", "arm_service")
+            for spot_id in range(self.num_parking_spots)
+        ]
 
     def _spot_transfer_time(self, spot_id: int) -> float:
         if spot_id < 0:
@@ -672,6 +720,20 @@ class CarrierAircraftSchedulingEnv:
             self.event_queue,
             Event(time=time, sequence=self.event_sequence, event_type=event_type, aircraft_id=aircraft_id),
         )
+
+    def _log_event(
+        self,
+        event_type: str,
+        aircraft_id: int = -1,
+        **details: Any,
+    ) -> None:
+        record: Dict[str, Any] = {
+            "time": self.time,
+            "event_type": event_type,
+            "aircraft_id": aircraft_id,
+        }
+        record.update(details)
+        self.event_log.append(record)
 
     def _sample_duration(self, mean_key: str, std_key: str) -> float:
         mean = float(self.config[mean_key])
@@ -785,11 +847,14 @@ class CarrierAircraftSchedulingEnv:
         return {
             "time": self.time,
             "makespan": None,
+            "scenario_profile": self.scenario_profile.name,
             "simulation_duration": self.simulation_duration,
             "completed_counts": completed_counts or dict(self.last_completed_counts),
             "launched": launched,
             "total_sorties_completed": metrics["total_sorties_completed"],
             "total_missed_sorties": metrics["total_missed_sorties"],
+            "sortie_generation_rate_per_hour": metrics["sortie_generation_rate_per_hour"],
+            "sortie_completion_rate": metrics["sortie_completion_rate"],
             "resources": self.get_state()["resources"],
             "invalid_action": invalid_action,
             "message": message,

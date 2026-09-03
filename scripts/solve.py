@@ -77,6 +77,7 @@ def run_episode(
     metrics = env.get_evaluation_metrics()
     return {
         "solver": solver_name,
+        "scenario_profile": env.scenario_profile.name,
         "seed": seed,
         "steps": steps,
         "done": env.done,
@@ -85,10 +86,13 @@ def run_episode(
         "started_actions": started_actions,
         "total_sorties_completed": metrics["total_sorties_completed"],
         "total_missed_sorties": metrics["total_missed_sorties"],
+        "sortie_generation_rate_per_hour": metrics["sortie_generation_rate_per_hour"],
+        "sortie_completion_rate": metrics["sortie_completion_rate"],
         "group_metrics": metrics["group_metrics"],
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
         "missed_sortie_records": env.get_missed_sortie_records(),
+        "event_log": env.get_event_log(),
     }
 
 
@@ -110,8 +114,15 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
 def write_dict_csv(path: str, rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
+    fieldnames: List[str] = []
+    seen = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
     with open(path, "w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -123,12 +134,17 @@ def write_runs_csv(path: str, results: List[Dict[str, Any]]) -> None:
             {
                 "run": run_id,
                 "solver": result["solver"],
+                "scenario_profile": result["scenario_profile"],
                 "seed": result["seed"],
                 "done": result["done"],
                 "steps": result["steps"],
                 "simulation_time": f"{result['simulation_time']:.6f}",
                 "total_sorties_completed": result["total_sorties_completed"],
                 "total_missed_sorties": result["total_missed_sorties"],
+                "sortie_generation_rate_per_hour": (
+                    f"{result['sortie_generation_rate_per_hour']:.6f}"
+                ),
+                "sortie_completion_rate": f"{result['sortie_completion_rate']:.6f}",
                 "total_reward": f"{result['total_reward']:.6f}",
                 "A_sorties": result["group_metrics"]["A"]["sorties_completed"],
                 "A_missed": result["group_metrics"]["A"]["missed_sorties"],
@@ -178,6 +194,7 @@ def main() -> None:
     parser.add_argument("--runs-csv", type=str, default="")
     parser.add_argument("--timing-csv", type=str, default="")
     parser.add_argument("--missed-csv", type=str, default="")
+    parser.add_argument("--event-log-csv", type=str, default="")
     parser.add_argument("--sampled-samples", type=int, default=30)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument("--checkpoint", type=str, default="")
@@ -252,6 +269,9 @@ def main() -> None:
     if args.missed_csv:
         write_dict_csv(args.missed_csv, best["missed_sortie_records"])
         print(f"missed_csv_written: {args.missed_csv}")
+    if args.event_log_csv:
+        write_dict_csv(args.event_log_csv, best["event_log"])
+        print(f"event_log_csv_written: {args.event_log_csv}")
 
 
 if __name__ == "__main__":
