@@ -24,6 +24,7 @@ from rl.model import CarrierPolicyValueNet
 from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
     GLOBAL_FEATURE_DIM,
+    OBSERVATION_SCHEMA_VERSION,
     encode_observation,
     to_torch_batch,
 )
@@ -45,7 +46,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=DEFAULT_TRAINING_SEED)
     parser.add_argument("--eval-seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
-    parser.add_argument("--group-size", type=int, default=DEFAULT_CONFIG["group_size"])
+    parser.add_argument(
+        "--wave-size",
+        "--group-size",
+        dest="group_size",
+        type=int,
+        default=DEFAULT_CONFIG["group_size"],
+    )
     parser.add_argument("--num-parking-spots", type=int, default=DEFAULT_CONFIG["num_parking_spots"])
     parser.add_argument("--parking-base-transfer-time", type=float, default=DEFAULT_CONFIG["parking_base_transfer_time"])
     parser.add_argument("--parking-ring-time-step", type=float, default=DEFAULT_CONFIG["parking_ring_time_step"])
@@ -148,6 +155,7 @@ def main() -> None:
             "best_update": best_update,
             "updates_completed": updates_completed,
             "eval_seed": args.eval_seed,
+            "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
             "env_config": config,
             "ppo_config": ppo_config.__dict__,
             "behavior_cloning": {
@@ -241,15 +249,22 @@ def collect_rollout(
     if env.done:
         env.reset(seed=seed)
 
+    actions_in_episode = 0
     while len(buffer) < config.rollout_steps:
         encoded = encode_observation(env)
         if not any(encoded.high_mask):
             _, done = step_with_shaping(env, None, config)
             if done:
+                if actions_in_episode == 0:
+                    raise RuntimeError(
+                        "episode ended without any legal scheduling action"
+                    )
                 env.reset(seed=seed + len(buffer))
+                actions_in_episode = 0
             continue
 
         action, log_prob, value = trainer.select_action(encoded, deterministic=False)
+        actions_in_episode += 1
         reward, done = step_with_shaping(env, action, config)
         while not done:
             next_encoded = encode_observation(env)
@@ -269,6 +284,7 @@ def collect_rollout(
         )
         if done:
             env.reset(seed=seed + len(buffer))
+            actions_in_episode = 0
     return buffer
 
 

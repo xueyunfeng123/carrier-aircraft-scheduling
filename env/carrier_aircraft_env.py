@@ -31,7 +31,8 @@ class Event:
 class AircraftRecord:
     """State and timing information for one aircraft."""
 
-    group: str = "A"
+    group: str = "shared"
+    initial_role: str = "mission"
     spot_id: int = -1
     parking_status: int = 0
     is_airborne: bool = False
@@ -64,10 +65,12 @@ class AircraftRecord:
     launch_ready: Optional[float] = None
     launch_start: Optional[float] = None
     launch_end: Optional[float] = None
+    assigned_launch_wave: Optional[int] = None
+    recovery_due_wave: Optional[int] = None
 
     def as_vector(self) -> List[float]:
         return [
-            0 if self.group == "A" else 1,
+            1 if self.initial_role == "reserve" else 0,
             self.spot_id,
             self.parking_status,
             int(self.is_airborne),
@@ -97,8 +100,12 @@ class CarrierAircraftSchedulingEnv:
             self.config.update(config)
         self.num_aircraft = int(self.config["num_aircraft"])
         self.group_size = int(self.config["group_size"])
-        if self.num_aircraft != self.group_size * 2:
-            raise ValueError("num_aircraft must equal group_size * 2 for A/B wave simulation")
+        if self.num_aircraft < self.group_size * 2:
+            raise ValueError(
+                "num_aircraft must provide two wave loads; additional aircraft "
+                "form the shared reserve"
+            )
+        self.num_reserve_aircraft = self.num_aircraft - self.group_size * 2
         self.num_parking_spots = int(self.config["num_parking_spots"])
         if self.num_parking_spots < self.num_aircraft:
             raise ValueError("num_parking_spots must be at least num_aircraft")
@@ -132,12 +139,15 @@ class CarrierAircraftSchedulingEnv:
         self.parking_occupancy: List[Optional[int]] = [None] * self.num_parking_spots
         self.aircraft: List[AircraftRecord] = []
         for aircraft_id in range(self.num_aircraft):
-            group = "A" if aircraft_id < self.group_size else "B"
             spot_id = aircraft_id
             self.parking_occupancy[spot_id] = aircraft_id
             self.aircraft.append(
                 AircraftRecord(
-                    group=group,
+                    initial_role=(
+                        "reserve"
+                        if aircraft_id >= self.group_size * 2
+                        else "mission"
+                    ),
                     spot_id=spot_id,
                     parking_status=2,
                     is_airborne=False,
@@ -244,11 +254,19 @@ class CarrierAircraftSchedulingEnv:
                 "index": self.current_wave_index,
                 "active_launch_group": self.active_launch_group,
                 "active_recovery_group": self.active_recovery_group,
+                "launch_target": self.group_size,
+                "launches_started": self.wave_records[-1]["launches_started"],
+                "sorties_completed": self.wave_records[-1]["sorties_completed"],
+                "pending_recovery_count": sum(
+                    aircraft.pending_recovery for aircraft in self.aircraft
+                ),
                 "next_wave_time": self._next_wave_time(),
             },
             "scenario": {
                 "name": self.scenario_profile.name,
                 "fidelity": self.scenario_profile.fidelity,
+                "fleet_model": "shared_dynamic",
+                "reserve_aircraft": self.num_reserve_aircraft,
             },
         }
 
@@ -300,6 +318,7 @@ class CarrierAircraftSchedulingEnv:
                 {
                     "aircraft_id": aircraft_id,
                     "group": item.group,
+                    "initial_role": item.initial_role,
                     "spot_id": item.spot_id,
                     "spot_transfer_time": self._spot_transfer_time(item.spot_id),
                     "parking_status": item.parking_status,
@@ -323,6 +342,8 @@ class CarrierAircraftSchedulingEnv:
                     "launch_ready": item.launch_ready,
                     "launch_start": item.launch_start,
                     "launch_end": item.launch_end,
+                    "assigned_launch_wave": item.assigned_launch_wave,
+                    "recovery_due_wave": item.recovery_due_wave,
                 }
             )
         return records
@@ -338,16 +359,28 @@ class CarrierAircraftSchedulingEnv:
 
     def get_evaluation_metrics(self) -> Dict[str, Any]:
         total_sorties = sum(aircraft.sorties_completed for aircraft in self.aircraft)
-        total_missed = sum(aircraft.missed_sorties for aircraft in self.aircraft)
+        total_missed = len(self.missed_sortie_records)
         horizon_hours = self.simulation_duration / 60.0
         sortie_opportunities = len(self.wave_records) * self.group_size
-        group_metrics = {}
-        for group in ("A", "B"):
-            group_aircraft = [aircraft for aircraft in self.aircraft if aircraft.group == group]
-            group_metrics[group] = {
-                "sorties_completed": sum(aircraft.sorties_completed for aircraft in group_aircraft),
-                "missed_sorties": sum(aircraft.missed_sorties for aircraft in group_aircraft),
+        group_metrics = {
+            label: {
+                "sorties_completed": sum(
+                    record["sorties_completed"]
+                    for record in self.wave_records
+                    if record["launch_group"] == label
+                ),
+                "missed_sorties": sum(
+                    record["missed_sorties"]
+                    for record in self.wave_records
+                    if record["launch_group"] == label
+                ),
             }
+            for label in ("A", "B")
+        }
+        group_metrics["shared"] = {
+            "sorties_completed": total_sorties,
+            "missed_sorties": total_missed,
+        }
         return {
             "simulation_duration": self.simulation_duration,
             "total_sorties_completed": total_sorties,
@@ -404,7 +437,7 @@ class CarrierAircraftSchedulingEnv:
                 self._start_wave(int(event.time / self.wave_interval))
                 continue
             if event.event_type == "simulation_end":
-                self._record_missed_sorties(self.current_wave_index, self.active_launch_group)
+                self._record_missed_sorties(self.current_wave_index)
                 self._log_event("simulation_end")
                 continue
 
@@ -414,6 +447,7 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.recovery_status = 2
                 aircraft.recovery_end = self.time
                 aircraft.pending_recovery = False
+                aircraft.recovery_due_wave = None
                 aircraft.is_airborne = False
                 aircraft.launch_status = 0
                 aircraft.parking_status = 1
@@ -452,12 +486,18 @@ class CarrierAircraftSchedulingEnv:
                 self.free_ammo_transport_vehicles += 1
                 self.free_lower_weapon_lifts += 1
             elif event.event_type == "launch_done":
+                launch_wave = aircraft.assigned_launch_wave
+                if launch_wave is None:
+                    raise RuntimeError("launch completed without an assigned wave")
+                wave_record = self._wave_record(launch_wave)
                 aircraft.launch_status = 3
                 aircraft.launch_end = self.time
                 aircraft.sorties_completed += 1
-                self.wave_records[-1]["sorties_completed"] += 1
+                wave_record["sorties_completed"] += 1
+                wave_record["launched_aircraft_ids"].append(event.aircraft_id)
                 aircraft.is_airborne = True
                 aircraft.pending_recovery = False
+                aircraft.recovery_due_wave = launch_wave + 1
                 self._release_parking_spot(event.aircraft_id)
                 aircraft.parking_status = 0
                 aircraft.spot_id = -1
@@ -533,8 +573,15 @@ class CarrierAircraftSchedulingEnv:
         aircraft = self.aircraft[aircraft_id]
         aircraft.launch_status = 2
         aircraft.launch_start = self.time
+        aircraft.assigned_launch_wave = self.current_wave_index
+        self.wave_records[-1]["launches_started"] += 1
+        self.wave_records[-1]["started_aircraft_ids"].append(aircraft_id)
         self.free_launch_channels -= 1
-        self._log_event("launch_start", aircraft_id)
+        self._log_event(
+            "launch_start",
+            aircraft_id,
+            wave_index=self.current_wave_index,
+        )
         self._push_event(self.time + float(self.config["launch_time"]), "launch_done", aircraft_id)
 
     def _try_start_waiting_deck_arming(self) -> None:
@@ -563,10 +610,12 @@ class CarrierAircraftSchedulingEnv:
 
     def _candidate_sets(self) -> Dict[str, List[int]]:
         candidates = {"R": [], "F": [], "M": [], "L": []}
+        launch_capacity_available = (
+            self.wave_records[-1]["launches_started"] < self.group_size
+        )
         for aircraft_id, aircraft in enumerate(self.aircraft):
             if (
-                aircraft.group == self.active_recovery_group
-                and aircraft.pending_recovery
+                aircraft.pending_recovery
                 and aircraft.recovery_status == 0
             ):
                 candidates["R"].append(aircraft_id)
@@ -585,12 +634,17 @@ class CarrierAircraftSchedulingEnv:
             ):
                 candidates["M"].append(aircraft_id)
             if (
-                aircraft.group == self.active_launch_group
+                launch_capacity_available
                 and not aircraft.is_airborne
                 and aircraft.parking_status == 2
                 and aircraft.fuel_status == 2
                 and aircraft.arm_status == 2
                 and aircraft.launch_status == 1
+                and self.time + float(self.config["launch_time"])
+                <= min(
+                    (self.current_wave_index + 1) * self.wave_interval,
+                    self.simulation_duration,
+                )
             ):
                 candidates["L"].append(aircraft_id)
         return candidates
@@ -604,17 +658,23 @@ class CarrierAircraftSchedulingEnv:
 
     def _start_wave(self, wave_index: int) -> None:
         if wave_index > self.current_wave_index:
-            self._record_missed_sorties(self.current_wave_index, self.active_launch_group)
+            self._record_missed_sorties(self.current_wave_index)
 
         self.current_wave_index = wave_index
         self.active_launch_group = "A" if wave_index % 2 == 0 else "B"
         self.active_recovery_group = None if wave_index == 0 else ("B" if wave_index % 2 == 0 else "A")
 
-        if self.active_recovery_group is not None:
-            for aircraft in self.aircraft:
-                if aircraft.group == self.active_recovery_group and aircraft.is_airborne:
+        recovery_aircraft_ids = []
+        if wave_index > 0:
+            for aircraft_id, aircraft in enumerate(self.aircraft):
+                if (
+                    aircraft.is_airborne
+                    and aircraft.recovery_due_wave is not None
+                    and aircraft.recovery_due_wave <= wave_index
+                ):
                     aircraft.pending_recovery = True
                     aircraft.recovery_status = 0
+                    recovery_aircraft_ids.append(aircraft_id)
 
         self.wave_records.append(
             {
@@ -622,40 +682,53 @@ class CarrierAircraftSchedulingEnv:
                 "time": self.time,
                 "launch_group": self.active_launch_group,
                 "recovery_group": self.active_recovery_group,
+                "launch_target": self.group_size,
+                "launches_started": 0,
                 "sorties_completed": 0,
+                "missed_sorties": 0,
+                "missed_recorded": False,
+                "started_aircraft_ids": [],
+                "launched_aircraft_ids": [],
+                "recovery_aircraft_ids": recovery_aircraft_ids,
             }
         )
         self._log_event(
             "wave_start",
             launch_group=self.active_launch_group,
             recovery_group=self.active_recovery_group,
+            recovery_aircraft_ids=recovery_aircraft_ids,
             wave_index=wave_index,
         )
 
-    def _record_missed_sorties(self, wave_index: int, group: str) -> None:
-        for aircraft_id, aircraft in enumerate(self.aircraft):
-            if (
-                aircraft.group == group
-                and not aircraft.is_airborne
-                and aircraft.launch_status != 2
-                and aircraft.last_missed_wave != wave_index
-            ):
-                aircraft.missed_sorties += 1
-                aircraft.last_missed_wave = wave_index
-                self.missed_sortie_records.append(
-                    {
-                        "wave_index": wave_index,
-                        "time": self.time,
-                        "group": group,
-                        "aircraft_id": aircraft_id,
-                    }
-                )
-                self._log_event(
-                    "missed_sortie",
-                    aircraft_id,
-                    group=group,
-                    wave_index=wave_index,
-                )
+    def _record_missed_sorties(self, wave_index: int) -> None:
+        record = self._wave_record(wave_index)
+        if record["missed_recorded"]:
+            return
+        missed = max(0, self.group_size - record["sorties_completed"])
+        record["missed_sorties"] = missed
+        record["missed_recorded"] = True
+        for slot_index in range(missed):
+            self.missed_sortie_records.append(
+                {
+                    "wave_index": wave_index,
+                    "time": self.time,
+                    "group": record["launch_group"],
+                    "slot_index": record["sorties_completed"] + slot_index,
+                    "aircraft_id": None,
+                }
+            )
+            self._log_event(
+                "missed_sortie",
+                group=record["launch_group"],
+                wave_index=wave_index,
+                slot_index=record["sorties_completed"] + slot_index,
+            )
+
+    def _wave_record(self, wave_index: int) -> Dict[str, Any]:
+        for record in self.wave_records:
+            if record["wave_index"] == wave_index:
+                return record
+        raise RuntimeError(f"unknown wave index: {wave_index}")
 
     def _next_wave_time(self) -> Optional[float]:
         next_time = (self.current_wave_index + 1) * self.wave_interval
@@ -690,8 +763,7 @@ class CarrierAircraftSchedulingEnv:
         return spot_id
 
     def _select_parking_spot(self, aircraft_id: int, free_spots: List[int]) -> int:
-        aircraft = self.aircraft[aircraft_id]
-        deadline = self._time_until_group_launch(aircraft.group)
+        deadline = self._time_until_launch_window()
         if deadline <= self.wave_interval:
             return min(free_spots, key=lambda spot_id: (self._spot_transfer_time(spot_id), spot_id))
         return min(free_spots, key=lambda spot_id: (spot_id, self._spot_transfer_time(spot_id)))
@@ -704,15 +776,25 @@ class CarrierAircraftSchedulingEnv:
                 self.parking_occupancy[spot_id] = None
 
     def _time_until_group_launch(self, group: str) -> float:
-        if group == self.active_launch_group:
-            return 0.0
-        next_wave = self.current_wave_index + 1
-        while next_wave * self.wave_interval <= self.simulation_duration:
-            next_group = "A" if next_wave % 2 == 0 else "B"
-            if next_group == group:
-                return next_wave * self.wave_interval - self.time
-            next_wave += 1
-        return float("inf")
+        del group
+        return self._time_until_launch_window()
+
+    def _time_until_launch_window(self) -> float:
+        current_record = self.wave_records[-1]
+        if current_record["launches_started"] < self.group_size:
+            return max(
+                0.0,
+                min(
+                    (self.current_wave_index + 1) * self.wave_interval,
+                    self.simulation_duration,
+                )
+                - self.time,
+            )
+        next_deadline = min(
+            (self.current_wave_index + 2) * self.wave_interval,
+            self.simulation_duration,
+        )
+        return max(0.0, next_deadline - self.time)
 
     def _push_event(self, time: float, event_type: str, aircraft_id: int) -> None:
         self.event_sequence += 1

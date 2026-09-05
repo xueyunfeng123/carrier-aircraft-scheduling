@@ -189,7 +189,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
-    parser.add_argument("--group-size", type=int, default=DEFAULT_CONFIG["group_size"])
+    parser.add_argument(
+        "--wave-size",
+        "--group-size",
+        dest="group_size",
+        type=int,
+        default=DEFAULT_CONFIG["group_size"],
+    )
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
     parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)

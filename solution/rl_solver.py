@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
-from rl.obs_encoder import AIRCRAFT_FEATURE_DIM, GLOBAL_FEATURE_DIM, encode_observation
+from rl.obs_encoder import (
+    AIRCRAFT_FEATURE_DIM,
+    GLOBAL_FEATURE_DIM,
+    OBSERVATION_SCHEMA_VERSION,
+    encode_observation,
+)
 
 
 class RLSolver:
@@ -47,6 +52,15 @@ class RLSolver:
         checkpoint_payload = None
         if checkpoint_path and checkpoint_path.exists():
             checkpoint_payload = load_checkpoint(str(checkpoint_path), device=device)
+            checkpoint_schema = checkpoint_payload.get("extra", {}).get(
+                "observation_schema_version",
+                1,
+            )
+            if checkpoint_schema != OBSERVATION_SCHEMA_VERSION:
+                raise ValueError(
+                    "RL checkpoint observation schema is incompatible with the "
+                    "dynamic shared-fleet environment; retrain BC+PPO"
+                )
             checkpoint_model_config = checkpoint_payload.get("model_config", {})
             model_config.update(checkpoint_model_config)
             if "action_conditioned_low_head" not in checkpoint_model_config:

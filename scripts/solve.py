@@ -162,7 +162,13 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
-    parser.add_argument("--group-size", type=int, default=DEFAULT_CONFIG["group_size"])
+    parser.add_argument(
+        "--wave-size",
+        "--group-size",
+        dest="group_size",
+        type=int,
+        default=DEFAULT_CONFIG["group_size"],
+    )
     parser.add_argument("--num-parking-spots", type=int, default=DEFAULT_CONFIG["num_parking_spots"])
     parser.add_argument(
         "--parking-base-transfer-time",

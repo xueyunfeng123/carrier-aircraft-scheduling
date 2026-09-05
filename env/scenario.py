@@ -574,7 +574,14 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
             "launch requires fueling and arming completion",
         ),
         unresolved_parameters=(),
-        metadata=(("reported_kpi", "completed_sorties_within_horizon"),),
+        metadata=(
+            ("reported_kpi", "completed_sorties_within_horizon"),
+            ("fleet_model", "shared_dynamic"),
+            (
+                "reserve_aircraft",
+                int(config["num_aircraft"]) - 2 * int(config["group_size"]),
+            ),
+        ),
     )
 
 

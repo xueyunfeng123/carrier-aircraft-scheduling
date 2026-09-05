@@ -55,13 +55,15 @@ to maximizing completed sorties and must not be added as a second objective.
 
 ### Base scenario
 
-- 40 aircraft, split into groups A and B with 20 aircraft each.
+- 45 aircraft share the deck fleet; the final five are tagged as initial
+  reserves for observability but obey the same readiness rules.
 - 45 abstract parking spots.
 - Fixed wave interval `wave_interval`, default 120 minutes.
 - Fixed simulation horizon `simulation_duration`, default 720 minutes.
-- Wave 0 launches A and has no recovery group.
-- Odd waves launch B and recover A.
-- Even waves after wave 0 launch A and recover B.
+- A/B are alternating wave-demand labels, not immutable aircraft groups.
+- Every wave dynamically selects up to 20 ready aircraft from the shared fleet.
+- The aircraft actually launched in one wave become recovery candidates in the
+  next wave; overdue airborne aircraft remain eligible for recovery.
 - Aircraft cycle:
 
 ```text
@@ -118,7 +120,11 @@ standard deviation.
 
 ### Core constraints
 
-- An aircraft can launch only during a wave assigned to its group.
+- Any grounded aircraft can fill a current-wave launch slot after fueling and
+  arming are complete.
+- At most 20 launch operations may start in one wave.
+- Missed sorties are unfilled wave-demand slots, not misses assigned to fixed
+  aircraft identities.
 - Recovery must complete before fueling or arming starts.
 - Arming stage 1 must complete before arming stage 2.
 - Fueling and arming may overlap.
@@ -133,7 +139,8 @@ standard deviation.
 The executable base model deliberately excludes the following supplied
 requirements:
 
-- 75-aircraft full inventory and the five-aircraft spare replacement process;
+- 75-aircraft full inventory and failure-driven hangar replacement; five
+  initial deck reserves are modeled as part of the shared 45-aircraft pool;
 - aircraft failures, repair distribution, hangar transfer, and return to service;
 - sea-state-dependent launch delay, recovery success rate, and wave-off;
 - pilots, command staff, individual support staff, rest, fatigue, and shifts;
@@ -266,9 +273,8 @@ there is currently no configured linter.
 
 ## Environment constraint experiments
 
-Two completed constraint experiments and one active paper-baseline experiment
-are intentionally kept outside `main`. Do not merge or cherry-pick them without
-an explicit decision.
+Constraint, paper-baseline, and fleet-model experiments are intentionally kept
+outside `main`. Do not merge or cherry-pick them without an explicit decision.
 
 ### `experiment/recovery-deadlines`
 
@@ -322,6 +328,21 @@ an explicit decision.
   lower; this unresolved discrepancy must be treated as a replication gap.
 - Current decision: continue B0.3 parameter identification and sensitivity
   analysis on this branch; do not merge before the replication gap is reviewed.
+
+### `experiment/dynamic-shared-fleet`
+
+- Parent commit: `7cb0723` on `experiment/yoon-sgp-baseline`.
+- Replaces immutable aircraft A/B membership with 45 shared deck aircraft,
+  including five aircraft tagged as initial reserves.
+- A/B remain wave-demand labels. Each wave accepts any 20 ready aircraft, and
+  the actual launched IDs form the next wave's recovery set.
+- Missed sorties are recorded as anonymous unfilled demand slots.
+- RL observation schema version changes from 1 to 2; old checkpoints are
+  rejected and BC+PPO must be retrained.
+- Fixed `seed=10007`, 60-minute, 12-wave results are: Random 143, FIFO 152,
+  SPT 157, EDD 158, Heuristic 157, SampledRandom 143, and CP-SAT 162.
+- Current decision: retain as the preferred interpretation of the supplied
+  five-aircraft reserve requirement, pending review before merging.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

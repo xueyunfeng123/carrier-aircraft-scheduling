@@ -106,17 +106,17 @@ class PriorityRuleSolver:
         )
 
     def _launch_deadline(self, aircraft_id: int) -> float:
-        group = self.env.aircraft[aircraft_id].group
+        del aircraft_id
         wave_index = self.env.current_wave_index
-        while wave_index * self.env.wave_interval < self.env.simulation_duration:
-            launch_group = "A" if wave_index % 2 == 0 else "B"
-            if launch_group == group:
-                return min(
-                    (wave_index + 1) * self.env.wave_interval,
-                    self.env.simulation_duration,
-                )
-            wave_index += 1
-        return float("inf")
+        if self.env.wave_records[-1]["launches_started"] < self.env.group_size:
+            return min(
+                (wave_index + 1) * self.env.wave_interval,
+                self.env.simulation_duration,
+            )
+        return min(
+            (wave_index + 2) * self.env.wave_interval,
+            self.env.simulation_duration,
+        )
 
 
 class FIFOSolver(PriorityRuleSolver):

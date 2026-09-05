@@ -28,7 +28,7 @@ class RolloutCollectionTest(unittest.TestCase):
                 "num_aircraft": 2,
                 "group_size": 1,
                 "num_parking_spots": 2,
-                "launch_time": 1.0,
+                "launch_time": 0.5,
                 "wave_interval": 60.0,
                 "simulation_duration": 0.5,
             }
@@ -45,7 +45,7 @@ class RolloutCollectionTest(unittest.TestCase):
 
         self.assertEqual(len(buffer), 1)
         self.assertTrue(buffer.dones[0])
-        self.assertAlmostEqual(buffer.rewards[0], 99.5)
+        self.assertAlmostEqual(buffer.rewards[0], 100.5)
 
     def test_default_reward_ignores_environment_terminal_reward(self) -> None:
         env = CarrierAircraftSchedulingEnv(
@@ -53,7 +53,7 @@ class RolloutCollectionTest(unittest.TestCase):
                 "num_aircraft": 2,
                 "group_size": 1,
                 "num_parking_spots": 2,
-                "launch_time": 1.0,
+                "launch_time": 0.5,
                 "wave_interval": 60.0,
                 "simulation_duration": 0.5,
             }
@@ -67,7 +67,7 @@ class RolloutCollectionTest(unittest.TestCase):
             seed=8,
         )
 
-        self.assertEqual(buffer.rewards, [0.0])
+        self.assertEqual(buffer.rewards, [1.0])
 
 
 class PolicyNetworkTest(unittest.TestCase):

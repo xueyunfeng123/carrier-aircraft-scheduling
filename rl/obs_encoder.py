@@ -10,6 +10,7 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 
 AIRCRAFT_FEATURE_DIM = 18
 GLOBAL_FEATURE_DIM = 18
+OBSERVATION_SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -107,7 +108,7 @@ def _normalize_aircraft(
     simulation_duration: float,
 ) -> List[float]:
     return [
-        row[0],  # group
+        row[0],  # initially assigned to the five-aircraft reserve
         _scale_nonnegative(row[1], num_parking_spots),
         row[2] / 2.0,
         row[3],
@@ -143,18 +144,20 @@ def _encode_global_features(
     else:
         time_to_next_wave = max(0.0, float(next_wave_time) - float(state["time"]))
 
-    active_launch_group = 0.0 if wave["active_launch_group"] == "A" else 1.0
-    active_recovery_group = -1.0
-    if wave["active_recovery_group"] == "A":
-        active_recovery_group = 0.0
-    elif wave["active_recovery_group"] == "B":
-        active_recovery_group = 1.0
+    launch_fill_ratio = float(wave["launches_started"]) / max(
+        1.0,
+        float(wave["launch_target"]),
+    )
+    recovery_pressure = float(wave["pending_recovery_count"]) / max(
+        1.0,
+        float(wave["launch_target"]),
+    )
 
     return [
         float(state["time"]) / simulation_duration,
         float(wave["index"]) / max(1.0, simulation_duration / wave_interval),
-        active_launch_group,
-        active_recovery_group,
+        launch_fill_ratio,
+        recovery_pressure,
         time_to_next_wave / wave_interval,
         resources["recovery_channels"] / max(1.0, float(config["num_recovery_channels"])),
         resources["fuel_servers"] / max(1.0, float(config["num_fuel_servers"])),
@@ -176,4 +179,3 @@ def _scale_nonnegative(value: float, divisor: float) -> float:
     if value < 0:
         return -1.0
     return value / max(1.0, divisor)
-

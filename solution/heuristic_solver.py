@@ -108,41 +108,29 @@ class WaveHeuristicSolver:
                 aircraft.arm_quantity_required * self._arm_unit_mean
                 + self.env._spot_transfer_time(aircraft.spot_id),
             )
-        time_to_launch = self._time_until_group_launch_deadline(aircraft.group, remaining)
+        time_to_launch = self._time_until_launch_deadline(remaining)
         return time_to_launch - remaining
 
-    def _time_until_group_launch_deadline(self, group: str, required_work: float = 0.0) -> float:
+    def _time_until_launch_deadline(self, required_work: float = 0.0) -> float:
         wave_index = self.env.current_wave_index
-        if group == self.env.active_launch_group:
+        current_record = self.env.wave_records[-1]
+        if current_record["launches_started"] < self.env.group_size:
             current_deadline = (wave_index + 1) * self.env.wave_interval
             current_time_left = max(0.0, current_deadline - self.env.time)
-            launch_queue_time = self._active_launch_queue_time(group)
+            launch_queue_time = self._active_launch_queue_time()
             if required_work + launch_queue_time <= current_time_left:
                 return current_time_left
-            next_same_group_deadline = (wave_index + 3) * self.env.wave_interval
-            if next_same_group_deadline <= self.env.simulation_duration + self.env.wave_interval:
-                return max(0.0, next_same_group_deadline - self.env.time)
-            return float("inf")
-        else:
-            launch_wave = wave_index + 1
-            while launch_wave * self.env.wave_interval <= self.env.simulation_duration:
-                next_group = "A" if launch_wave % 2 == 0 else "B"
-                if next_group == group:
-                    break
-                launch_wave += 1
-            else:
-                return float("inf")
+        next_deadline = (wave_index + 2) * self.env.wave_interval
+        if next_deadline <= self.env.simulation_duration + self.env.wave_interval:
+            return max(0.0, next_deadline - self.env.time)
+        return float("inf")
 
-        deadline = (launch_wave + 1) * self.env.wave_interval
-        return max(0.0, deadline - self.env.time)
-
-    def _active_launch_queue_time(self, group: str) -> float:
+    def _active_launch_queue_time(self) -> float:
         queued = sum(
             1
             for aircraft in self.env.aircraft
             if (
-                aircraft.group == group
-                and not aircraft.is_airborne
+                not aircraft.is_airborne
                 and aircraft.launch_status == 1
             )
         )
@@ -160,7 +148,7 @@ class WaveHeuristicSolver:
     def _fuel_priority(self, aircraft_id: int) -> Tuple[int, float, float, int, float, int, int]:
         aircraft = self.env.aircraft[aircraft_id]
         remaining = max(self._fuel_work(aircraft), self._arm_work(aircraft))
-        time_to_deadline = self._time_until_group_launch_deadline(aircraft.group, remaining)
+        time_to_deadline = self._time_until_launch_deadline(remaining)
         slack = time_to_deadline - remaining
         return (
             int(slack < 0.0),
@@ -175,7 +163,7 @@ class WaveHeuristicSolver:
     def _arm_priority(self, aircraft_id: int) -> Tuple[int, float, float, int, float, int, int]:
         aircraft = self.env.aircraft[aircraft_id]
         remaining = max(self._fuel_work(aircraft), self._arm_work(aircraft))
-        time_to_deadline = self._time_until_group_launch_deadline(aircraft.group, remaining)
+        time_to_deadline = self._time_until_launch_deadline(remaining)
         slack = time_to_deadline - remaining
         return (
             int(slack < 0.0),
