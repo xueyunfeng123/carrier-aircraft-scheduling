@@ -60,10 +60,18 @@
 | 资源         | 数量 | 说明                       |
 |--------------|------|----------------------------|
 | 回收通道     | 1    | 独占，一次只能回收一架     |
-| 放飞通道     | 1    | 独占，一次只能放飞一架     |
+| 起飞位       | 4    | 图上的位置容量             |
+| 放飞通道     | 1    | 作业容量，一次只能放飞一架 |
+| 甲板停机位   | 45   | 起飞区 10、着舰区 10、保障区 25 |
+| 通道节点     | 19   | 结构复现实验假设           |
 | 加油服务器   | 20   | 可并行                     |
 | 挂弹车       | 10   | 可并行                     |
 | 保障人员     | 50   | 加油耗 4 人/架，挂弹耗 4 人/架 |
+
+空间图默认启用。飞机放飞前必须取得“停机位到起飞位”的可行路径，
+回收时必须取得“着舰跑道到空闲停机位”的可行路径。当前采用整条路径
+原子预留，移动完成后释放中间节点；这是缺少真实甲板邻接矩阵时的保守
+结构假设，不代表真实甲板几何或逐节点滑行。
 
 ---
 
@@ -98,10 +106,11 @@
 | 事件           | 触发条件                                   |
 |----------------|--------------------------------------------|
 | `wave_start`   | 每隔 `wave_interval` 时间单位              |
-| `recover_done` | 回收开始后 1.0 时间单位                    |
+| `recover_done` | 回收与跑道至停机位转运完成                 |
 | `fuel_done`    | 加油开始后 N(20, 3) 时间单位               |
 | `arm_done`     | 挂弹开始后 数量 × N(5, √2) 时间单位（累加）|
-| `launch_done`  | 放飞开始后 1.0 时间单位                    |
+| `taxi_to_launch_done` | 到达起飞位并释放中间路径           |
+| `launch_done`  | 到达起飞位后 1.0 时间单位                  |
 
 事件通过 `heapq` 优先队列管理。
 
@@ -119,6 +128,9 @@
 | `arm_unit_time_variance` | 2.0    | 单枚弹药挂载时间方差 |
 | `wave_interval`          | 120.0  | 波次间隔             |
 | `simulation_duration`    | 720.0  | 总模拟时长           |
+| `spatial_graph_enabled`  | true   | 是否启用甲板路径约束 |
+| `num_launch_positions`   | 4      | 空间图起飞位节点数   |
+| `deck_edge_travel_time`  | 1.0    | 每条结构图边的移动分钟数 |
 
 挂弹总时间 = 每枚弹药独立采样的累加。弹药数量在回收完成时从
 [1, 2, 3, 4] 中按概率 [0.3, 0.4, 0.2, 0.1] 随机抽取。
@@ -144,7 +156,7 @@ Reward = -α·Δt               （时间惩罚，α=1.0）
 ## 9. 典型执行流程
 
 1. `reset()` → 初始化 45 架共享飞机，其中 5 架为初始备用角色
-2. 智能体选择 `L` + aircraft_id → 动态填充当前波次的 20 个任务席位
+2. 智能体选择 `L` + aircraft_id → 预留滑行路径并动态填充任务席位
 3. 无可行动作 → 自动推进到下一事件
 4. 智能体选择 `R` → `F` / `M`（并行）→ `L` → 等待下一波次
 5. 循环直到 `time >= simulation_duration`
@@ -248,6 +260,9 @@ python -m scripts.solve --solver sampled --sampled-samples 30
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
+# 关闭空间图，运行匹配对照
+python -m scripts.solve --solver heuristic --disable-spatial-graph
+
 # Heuristic 行为克隆预热、PPO 微调与评估
 python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
 python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
@@ -260,6 +275,11 @@ python -m scripts.benchmark_non_rl \
     --rl-checkpoint checkpoints/rl_policy.pt \
     --rl-label rl_bc_ppo \
     --output outputs/all_solver_benchmark_60min_seed10007.csv
+
+# 空间图关闭对照
+python -m scripts.benchmark_non_rl \
+    --disable-spatial-graph \
+    --output outputs/spatial_deck_graph_disabled_control_60min_seed10007.csv
 ```
 
 默认 RL 训练先从 5 个训练 seed 收集 Heuristic 示范并进行行为克隆，再使用
@@ -268,8 +288,8 @@ checkpoint，避免后续更新覆盖更好的策略。纯 PPO 对照可通过
 `--bc-episodes 0` 运行。
 
 共享机队将飞机特征从永久 A/B 标记改为初始备用角色，并将全局特征改为
-波次填充率和待回收压力，观测版本为 2。旧环境训练的 checkpoint 会被
-明确拒绝，必须重新执行 BC+PPO 训练。
+波次填充率和待回收压力；空间图进一步加入空闲通道比例，当前观测版本为
+3。旧环境训练的 checkpoint 会被明确拒绝，必须重新执行 BC+PPO 训练。
 
 实验结果建议写入 `outputs/`：
 

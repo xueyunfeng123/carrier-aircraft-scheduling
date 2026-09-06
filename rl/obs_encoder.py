@@ -9,8 +9,8 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 
 
 AIRCRAFT_FEATURE_DIM = 18
-GLOBAL_FEATURE_DIM = 18
-OBSERVATION_SCHEMA_VERSION = 2
+GLOBAL_FEATURE_DIM = 19
+OBSERVATION_SCHEMA_VERSION = 3
 
 
 @dataclass
@@ -137,6 +137,7 @@ def _encode_global_features(
 ) -> List[float]:
     resources = state["resources"]
     wave = state["wave"]
+    deck = state["deck"]
     config = env.config
     next_wave_time = wave["next_wave_time"]
     if next_wave_time is None:
@@ -168,6 +169,7 @@ def _encode_global_features(
         resources["personnel"] / max(1.0, float(config["num_personnel"])),
         resources["launch_channels"] / max(1.0, float(config["num_launch_channels"])),
         resources["free_parking_spots"] / max(1.0, float(config["num_parking_spots"])),
+        float(deck["free_pathway_fraction"]),
         len(env.event_queue) / 100.0,
         sum(1 for aircraft in env.aircraft if aircraft.is_airborne) / max(1, env.num_aircraft),
         sum(aircraft.sorties_completed for aircraft in env.aircraft) / max(1, env.num_aircraft * 12),

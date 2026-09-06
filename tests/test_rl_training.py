@@ -10,7 +10,12 @@ from rl.behavior_cloning import (
     pretrain_behavior_cloning,
 )
 from rl.model import CarrierPolicyValueNet
-from rl.obs_encoder import AIRCRAFT_FEATURE_DIM, GLOBAL_FEATURE_DIM
+from rl.obs_encoder import (
+    AIRCRAFT_FEATURE_DIM,
+    GLOBAL_FEATURE_DIM,
+    OBSERVATION_SCHEMA_VERSION,
+    encode_observation,
+)
 from rl.train_config import PPOConfig
 from scripts.train_rl import collect_rollout
 
@@ -31,6 +36,7 @@ class RolloutCollectionTest(unittest.TestCase):
                 "launch_time": 0.5,
                 "wave_interval": 60.0,
                 "simulation_duration": 0.5,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)
@@ -56,6 +62,7 @@ class RolloutCollectionTest(unittest.TestCase):
                 "launch_time": 0.5,
                 "wave_interval": 60.0,
                 "simulation_duration": 0.5,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)
@@ -71,6 +78,19 @@ class RolloutCollectionTest(unittest.TestCase):
 
 
 class PolicyNetworkTest(unittest.TestCase):
+    def test_spatial_observation_reports_pathway_availability(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+
+        initial = encode_observation(env)
+        env.step({"high_level": 3, "aircraft_id": 0})
+        moving = encode_observation(env)
+
+        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 3)
+        self.assertEqual(len(initial.global_features), GLOBAL_FEATURE_DIM)
+        self.assertEqual(initial.global_features[14], 1.0)
+        self.assertLess(moving.global_features[14], 1.0)
+
     def test_low_level_logits_are_conditioned_on_high_level_action(self) -> None:
         import torch
 
@@ -110,6 +130,7 @@ class BehaviorCloningTest(unittest.TestCase):
             "num_parking_spots": 4,
             "wave_interval": 20.0,
             "simulation_duration": 40.0,
+            "spatial_graph_enabled": False,
             "num_fuel_servers": 2,
             "num_arm_vehicles": 2,
             "num_ammo_transport_vehicles": 2,

@@ -181,6 +181,56 @@ class DeckGraph:
     ) -> Tuple[float, Tuple[str, ...]]:
         return self._shortest_route(source, target, frozenset(blocked_nodes))
 
+    def shortest_route_to_any_avoiding(
+        self,
+        source: str,
+        targets: Iterable[str],
+        blocked_nodes: Iterable[str],
+    ) -> Tuple[Optional[str], float, Tuple[str, ...]]:
+        """Find the nearest reachable target with one deterministic search."""
+
+        self.node(source)
+        target_ids = frozenset(targets)
+        for target in target_ids:
+            self.node(target)
+        blocked = frozenset(blocked_nodes)
+        available_targets = target_ids - blocked
+        if source in blocked or not available_targets:
+            return None, math.inf, ()
+
+        distances = {source: 0.0}
+        predecessors: Dict[str, str] = {}
+        queue = [(0.0, source)]
+        best_target: Optional[str] = None
+        best_distance = math.inf
+        while queue:
+            distance, node_id = heapq.heappop(queue)
+            if distance > distances[node_id]:
+                continue
+            if distance > best_distance:
+                break
+            if node_id in available_targets:
+                if (distance, node_id) < (best_distance, best_target or ""):
+                    best_distance = distance
+                    best_target = node_id
+                continue
+            for neighbor, weight in self._adjacency[node_id]:
+                if neighbor in blocked:
+                    continue
+                next_distance = distance + weight
+                if next_distance < distances.get(neighbor, math.inf):
+                    distances[neighbor] = next_distance
+                    predecessors[neighbor] = node_id
+                    heapq.heappush(queue, (next_distance, neighbor))
+
+        if best_target is None:
+            return None, math.inf, ()
+        path = [best_target]
+        while path[-1] != source:
+            path.append(predecessors[path[-1]])
+        path.reverse()
+        return best_target, best_distance, tuple(path)
+
     def _shortest_route(
         self,
         source: str,

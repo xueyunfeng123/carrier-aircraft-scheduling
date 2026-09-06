@@ -59,7 +59,7 @@ class RLSolver:
             if checkpoint_schema != OBSERVATION_SCHEMA_VERSION:
                 raise ValueError(
                     "RL checkpoint observation schema is incompatible with the "
-                    "dynamic shared-fleet environment; retrain BC+PPO"
+                    "current environment; retrain BC+PPO"
                 )
             checkpoint_model_config = checkpoint_payload.get("model_config", {})
             model_config.update(checkpoint_model_config)

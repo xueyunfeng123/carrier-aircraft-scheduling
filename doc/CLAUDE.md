@@ -57,7 +57,8 @@ to maximizing completed sorties and must not be added as a second objective.
 
 - 45 aircraft share the deck fleet; the final five are tagged as initial
   reserves for observability but obey the same readiness rules.
-- 45 abstract parking spots.
+- 45 capacity-one parking nodes: 10 in the launch area, 10 in the recovery
+  area, and 25 in the support area.
 - Fixed wave interval `wave_interval`, default 120 minutes.
 - Fixed simulation horizon `simulation_duration`, default 720 minutes.
 - A/B are alternating wave-demand labels, not immutable aircraft groups.
@@ -80,7 +81,8 @@ launch -> airborne -> recovery -> parking -> fueling || arming -> launch
 | Resource | Base-model capacity | Supplied requirement |
 |---|---:|---:|
 | Recovery channel/runway | 1 | 1 |
-| Launch channel/position | 1 | 4 launch positions |
+| Launch operation channel | 1 | Not separately specified |
+| Launch position nodes | 4 | 4 launch positions |
 | Parking spots | 45 | 45 |
 | Fuel servers | 20 | 20 stations, each covering two spots |
 | Arm vehicles | 10 | 10 |
@@ -130,6 +132,12 @@ standard deviation.
 - Fueling and arming may overlap.
 - Both fueling and arming must complete before launch.
 - A parking spot can contain at most one aircraft at a time.
+- Launch requires an available route from the aircraft parking node to one of
+  four launch-position nodes.
+- Recovery requires an available route from the recovery runway to an
+  unoccupied parking node.
+- A reserved route has exclusive capacity-one occupancy until movement
+  completes; the destination remains occupied until the aircraft leaves it.
 - Concurrent resource and personnel usage must not exceed configured capacity.
 - An aircraft cannot be airborne and perform deck operations simultaneously.
 - The same operation instance cannot be started more than once.
@@ -144,14 +152,21 @@ requirements:
 - aircraft failures, repair distribution, hangar transfer, and return to service;
 - sea-state-dependent launch delay, recovery success rate, and wave-off;
 - pilots, command staff, individual support staff, rest, fatigue, and shifts;
-- four physical launch positions and interference with the recovery area;
 - aircraft elevators and tractor allocation;
-- explicit taxi routes, path conflicts, jet-blast constraints, and deck topology;
+- measured deck coordinates and the real adjacency matrix;
+- stepwise taxi motion, lane direction, turning radius, separation distance,
+  tractor use, and jet-blast constraints;
+- mutual exclusion between the two launch positions stated to be in the
+  recovery area and the recovery runway;
 - ammunition types, compatibility, inventory, assembly capacity, and storage;
 - fuel state while airborne and recovery queue endurance constraints.
 
-Parking geometry is currently reduced to a scalar transfer-time function:
-spot 0 takes 2 minutes, and every two additional spot indices add 1 minute.
+Aircraft movement uses a schematic graph with 19 pathway nodes and one-minute
+edges. The topology and atomic whole-route reservation are explicit structural
+assumptions because the supplied requirements do not provide coordinates or an
+adjacency matrix. Ammunition delivery still uses the historical scalar
+parking-transfer function: spot 0 takes 2 minutes, and every two additional
+spot indices add 1 minute.
 
 Do not describe these excluded items as implemented. Add them only through an
 explicit model extension with corresponding state, constraints, tests, and
@@ -163,6 +178,7 @@ evaluation scenarios.
 |---|---|
 | `env/config.py` | Base capacities, durations, reward constants, and action IDs |
 | `env/scenario.py` | Solver-independent scenario, process, mission-plan, duration-distribution, and deck-graph definitions |
+| `env/project_deck_graph.py` | Project-core schematic topology, node occupancy, shortest-route search, and atomic route reservations |
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
 | `env/yoon_sortie_env.py` | Executable Yoon 2023 structural replication with mission, movement, runway, lift, hangar, and maintenance events |
 | `scripts/solve.py` | Unified command-line runner and CSV export |
@@ -217,6 +233,7 @@ Events are stored in a `heapq` priority queue. Current event types are:
 - `fuel_done`
 - `ammo_to_assembly_done`
 - `arm_done`
+- `taxi_to_launch_done`
 - `launch_done`
 - `simulation_end`
 
@@ -343,6 +360,31 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   SPT 157, EDD 158, Heuristic 157, SampledRandom 143, and CP-SAT 162.
 - Current decision: retain as the preferred interpretation of the supplied
   five-aircraft reserve requirement, pending review before merging.
+
+### `experiment/spatial-deck-graph`
+
+- Parent commit: `689c008` on `experiment/dynamic-shared-fleet`.
+- Maps the supplied 45 parking spots into 10 launch-area, 10 recovery-area,
+  and 25 support-area capacity-one nodes, with four launch-position nodes and
+  one recovery-runway node.
+- Reuses 19 pathway nodes as a structural scale from Yoon 2023. The adjacency
+  pattern, one-minute edge time, and atomic whole-route reservation are
+  explicit assumptions because no project deck geometry is available.
+- Launch reserves a parking-to-launch route before taxi; recovery reserves the
+  runway-to-parking route and destination before recovery starts. Conflicting
+  routes are removed by the action mask.
+- Heuristic, SPT, and CP-SAT duration estimates include route time. RL global
+  state includes free pathway fraction and uses observation schema version 3.
+- Fixed `seed=10007`, 60-minute, 12-wave results with the graph enabled are:
+  Random 66, FIFO 74, SPT 90, EDD 53, Heuristic 93, SampledRandom 77, and
+  CP-SAT 86. The matched graph-disabled totals remain 143/152/157/158/157/
+  143/162.
+- The large throughput reduction is evidence that the current atomic
+  reservation assumption is restrictive, not evidence of real carrier
+  capacity. Calibrate topology, edge times, and movement granularity before
+  using these values as thesis results.
+- Current decision: retain as a structural experiment; do not merge into the
+  base environment until the spatial assumptions are reviewed.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

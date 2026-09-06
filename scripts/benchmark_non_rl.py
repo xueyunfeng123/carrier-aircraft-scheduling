@@ -35,6 +35,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--sampled-samples", type=int, default=30)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
+    parser.add_argument(
+        "--disable-spatial-graph",
+        action="store_true",
+        help="run the matched control without deck routes or movement time",
+    )
     parser.add_argument("--rl-checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-label", type=str, default="rl")
@@ -57,6 +62,7 @@ def main() -> None:
         config = dict(DEFAULT_CONFIG)
         config["wave_interval"] = float(interval)
         config["simulation_duration"] = float(interval) * args.waves
+        config["spatial_graph_enabled"] = not args.disable_spatial_graph
         capacity = args.waves * int(config["group_size"])
 
         for solver_name in solver_names:
@@ -113,6 +119,7 @@ def main() -> None:
             row = {
                 "solver": args.rl_label if solver_name == "rl" else solver_name,
                 "scenario_profile": config["scenario_profile"],
+                "spatial_graph_enabled": config["spatial_graph_enabled"],
                 "wave_interval": float(interval),
                 "simulation_duration": config["simulation_duration"],
                 "waves": args.waves,

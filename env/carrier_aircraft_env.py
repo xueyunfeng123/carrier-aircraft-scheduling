@@ -14,6 +14,13 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from env.config import ACTION_TO_INDEX, DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
+from env.project_deck_graph import (
+    DeckOccupancy,
+    DeckRouteReservation,
+    ProjectDeckGraphAssumptions,
+    ProjectDeckLayout,
+    build_project_deck_layout,
+)
 from env.scenario import PROJECT_CORE_PROFILE, build_project_core_profile
 
 
@@ -65,6 +72,8 @@ class AircraftRecord:
     launch_ready: Optional[float] = None
     launch_start: Optional[float] = None
     launch_end: Optional[float] = None
+    taxi_start: Optional[float] = None
+    taxi_end: Optional[float] = None
     assigned_launch_wave: Optional[int] = None
     recovery_due_wave: Optional[int] = None
 
@@ -117,6 +126,18 @@ class CarrierAircraftSchedulingEnv:
                 "for the paper baseline"
             )
         self.scenario_profile = build_project_core_profile(self.config)
+        self.spatial_graph_enabled = bool(self.config["spatial_graph_enabled"])
+        self.deck_layout: Optional[ProjectDeckLayout] = None
+        if self.spatial_graph_enabled:
+            self.deck_layout = build_project_deck_layout(
+                self.num_parking_spots,
+                ProjectDeckGraphAssumptions(
+                    launch_positions=int(self.config["num_launch_positions"]),
+                    edge_travel_minutes=float(
+                        self.config["deck_edge_travel_time"]
+                    ),
+                ),
+            )
         self.rng = random.Random()
         self.reset()
 
@@ -137,10 +158,19 @@ class CarrierAircraftSchedulingEnv:
         self.missed_sortie_records: List[Dict[str, Any]] = []
         self.parking_transfer_times = self._build_parking_transfer_times()
         self.parking_occupancy: List[Optional[int]] = [None] * self.num_parking_spots
+        self.deck_occupancy: Optional[DeckOccupancy] = None
+        self.active_deck_routes: Dict[int, DeckRouteReservation] = {}
+        if self.deck_layout is not None:
+            self.deck_occupancy = DeckOccupancy(self.deck_layout.graph)
         self.aircraft: List[AircraftRecord] = []
         for aircraft_id in range(self.num_aircraft):
             spot_id = aircraft_id
             self.parking_occupancy[spot_id] = aircraft_id
+            if self.deck_occupancy is not None and self.deck_layout is not None:
+                self.deck_occupancy.occupy(
+                    self.deck_layout.parking_node(spot_id),
+                    aircraft_id,
+                )
             self.aircraft.append(
                 AircraftRecord(
                     initial_role=(
@@ -268,6 +298,7 @@ class CarrierAircraftSchedulingEnv:
                 "fleet_model": "shared_dynamic",
                 "reserve_aircraft": self.num_reserve_aircraft,
             },
+            "deck": self._deck_state(),
         }
 
     def get_action_mask(self, high_level_action: Optional[int] = None) -> Dict[str, Any]:
@@ -342,6 +373,8 @@ class CarrierAircraftSchedulingEnv:
                     "launch_ready": item.launch_ready,
                     "launch_start": item.launch_start,
                     "launch_end": item.launch_end,
+                    "taxi_start": item.taxi_start,
+                    "taxi_end": item.taxi_end,
                     "assigned_launch_wave": item.assigned_launch_wave,
                     "recovery_due_wave": item.recovery_due_wave,
                 }
@@ -444,21 +477,34 @@ class CarrierAircraftSchedulingEnv:
             aircraft = self.aircraft[event.aircraft_id]
             self._log_event(event.event_type, event.aircraft_id)
             if event.event_type == "recover_done":
+                if self.spatial_graph_enabled:
+                    reservation = self._complete_deck_route(
+                        event.aircraft_id,
+                        clear_operation=True,
+                    )
+                    aircraft.spot_id = self._route_target_spot(reservation)
+                    aircraft.taxi_end = self.time
+                    aircraft.parking_status = 2
+                    aircraft.park_start = aircraft.taxi_start or self.time
+                    aircraft.park_end = self.time
+                else:
+                    aircraft.spot_id = self._assign_parking_spot(
+                        event.aircraft_id
+                    )
+                    aircraft.parking_status = 1
+                    aircraft.park_start = self.time
+                    self._push_event(
+                        self.time,
+                        "park_done",
+                        event.aircraft_id,
+                    )
                 aircraft.recovery_status = 2
                 aircraft.recovery_end = self.time
                 aircraft.pending_recovery = False
                 aircraft.recovery_due_wave = None
                 aircraft.is_airborne = False
                 aircraft.launch_status = 0
-                aircraft.parking_status = 1
-                aircraft.spot_id = self._assign_parking_spot(event.aircraft_id)
-                aircraft.park_start = self.time
                 aircraft.arm_quantity_required = self._sample_arm_quantity()
-                self._push_event(
-                    self.time,
-                    "park_done",
-                    event.aircraft_id,
-                )
                 self.free_recovery_channels += 1
                 completed["recovery"] += 1
             elif event.event_type == "park_done":
@@ -485,6 +531,20 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.ammo_to_assembly_end = self.time
                 self.free_ammo_transport_vehicles += 1
                 self.free_lower_weapon_lifts += 1
+            elif event.event_type == "taxi_to_launch_done":
+                reservation = self._complete_deck_route(event.aircraft_id)
+                aircraft.taxi_end = self.time
+                aircraft.launch_start = self.time
+                self._log_event(
+                    "launch_position_ready",
+                    event.aircraft_id,
+                    launch_position=reservation.target,
+                )
+                self._push_event(
+                    self.time + float(self.config["launch_time"]),
+                    "launch_done",
+                    event.aircraft_id,
+                )
             elif event.event_type == "launch_done":
                 launch_wave = aircraft.assigned_launch_wave
                 if launch_wave is None:
@@ -498,7 +558,9 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.is_airborne = True
                 aircraft.pending_recovery = False
                 aircraft.recovery_due_wave = launch_wave + 1
-                self._release_parking_spot(event.aircraft_id)
+                self._release_launch_position(event.aircraft_id)
+                if not self.spatial_graph_enabled:
+                    self._release_parking_spot(event.aircraft_id)
                 aircraft.parking_status = 0
                 aircraft.spot_id = -1
                 aircraft.recovery_status = 0
@@ -521,15 +583,38 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.launch_status = 1
                 aircraft.launch_ready = self.time
         self._try_start_waiting_deck_arming()
+        if self.deck_occupancy is not None:
+            self.deck_occupancy.validate()
         return completed
 
     def _start_recovery(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
+        movement_duration = 0.0
+        if self.spatial_graph_enabled:
+            reservation = self._reserve_recovery_route(aircraft_id)
+            self.active_deck_routes[aircraft_id] = reservation
+            aircraft.spot_id = self._route_target_spot(reservation)
+            aircraft.parking_status = 1
+            aircraft.taxi_start = self.time + float(self.config["recovery_time"])
+            movement_duration = self._route_duration(reservation)
         aircraft.recovery_status = 1
         aircraft.recovery_start = self.time
         self.free_recovery_channels -= 1
-        self._log_event("recover_start", aircraft_id)
-        self._push_event(self.time + float(self.config["recovery_time"]), "recover_done", aircraft_id)
+        self._log_event(
+            "recover_start",
+            aircraft_id,
+            route=(
+                list(self.active_deck_routes[aircraft_id].path)
+                if self.spatial_graph_enabled
+                else []
+            ),
+            movement_duration=movement_duration,
+        )
+        self._push_event(
+            self.time + float(self.config["recovery_time"]) + movement_duration,
+            "recover_done",
+            aircraft_id,
+        )
 
     def _start_fueling(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
@@ -571,8 +656,16 @@ class CarrierAircraftSchedulingEnv:
 
     def _start_launch(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
+        movement_duration = 0.0
+        if self.spatial_graph_enabled:
+            reservation = self._reserve_launch_route(aircraft_id)
+            self.active_deck_routes[aircraft_id] = reservation
+            movement_duration = self._route_duration(reservation)
+            aircraft.taxi_start = self.time
+            aircraft.parking_status = 0
+            self._release_parking_spot(aircraft_id)
+            aircraft.spot_id = -1
         aircraft.launch_status = 2
-        aircraft.launch_start = self.time
         aircraft.assigned_launch_wave = self.current_wave_index
         self.wave_records[-1]["launches_started"] += 1
         self.wave_records[-1]["started_aircraft_ids"].append(aircraft_id)
@@ -581,8 +674,26 @@ class CarrierAircraftSchedulingEnv:
             "launch_start",
             aircraft_id,
             wave_index=self.current_wave_index,
+            route=(
+                list(self.active_deck_routes[aircraft_id].path)
+                if self.spatial_graph_enabled
+                else []
+            ),
+            movement_duration=movement_duration,
         )
-        self._push_event(self.time + float(self.config["launch_time"]), "launch_done", aircraft_id)
+        if self.spatial_graph_enabled:
+            self._push_event(
+                self.time + movement_duration,
+                "taxi_to_launch_done",
+                aircraft_id,
+            )
+        else:
+            aircraft.launch_start = self.time
+            self._push_event(
+                self.time + float(self.config["launch_time"]),
+                "launch_done",
+                aircraft_id,
+            )
 
     def _try_start_waiting_deck_arming(self) -> None:
         for aircraft_id, aircraft in enumerate(self.aircraft):
@@ -617,6 +728,10 @@ class CarrierAircraftSchedulingEnv:
             if (
                 aircraft.pending_recovery
                 and aircraft.recovery_status == 0
+                and (
+                    not self.spatial_graph_enabled
+                    or self._find_recovery_route(aircraft_id) is not None
+                )
             ):
                 candidates["R"].append(aircraft_id)
             if (
@@ -633,6 +748,18 @@ class CarrierAircraftSchedulingEnv:
                 and aircraft.arm_status == 0
             ):
                 candidates["M"].append(aircraft_id)
+            launch_route = (
+                self._find_launch_route(aircraft_id)
+                if self.spatial_graph_enabled
+                and not aircraft.is_airborne
+                and aircraft.parking_status == 2
+                else None
+            )
+            launch_movement_duration = (
+                self._route_duration_values(launch_route[2])
+                if launch_route is not None
+                else 0.0
+            )
             if (
                 launch_capacity_available
                 and not aircraft.is_airborne
@@ -640,7 +767,13 @@ class CarrierAircraftSchedulingEnv:
                 and aircraft.fuel_status == 2
                 and aircraft.arm_status == 2
                 and aircraft.launch_status == 1
-                and self.time + float(self.config["launch_time"])
+                and (
+                    not self.spatial_graph_enabled
+                    or launch_route is not None
+                )
+                and self.time
+                + launch_movement_duration
+                + float(self.config["launch_time"])
                 <= min(
                     (self.current_wave_index + 1) * self.wave_interval,
                     self.simulation_duration,
@@ -735,6 +868,158 @@ class CarrierAircraftSchedulingEnv:
         if next_time > self.simulation_duration:
             return None
         return next_time
+
+    def _find_launch_route(
+        self,
+        aircraft_id: int,
+    ) -> Optional[Tuple[str, Tuple[str, ...], float]]:
+        if self.deck_layout is None or self.deck_occupancy is None:
+            return None
+        aircraft = self.aircraft[aircraft_id]
+        if aircraft.spot_id < 0:
+            return None
+        source = self.deck_layout.parking_node(aircraft.spot_id)
+        return self.deck_occupancy.find_route(
+            aircraft_id,
+            source,
+            self.deck_layout.launch_nodes,
+        )
+
+    def _find_recovery_route(
+        self,
+        aircraft_id: int,
+    ) -> Optional[Tuple[str, Tuple[str, ...], float]]:
+        if self.deck_layout is None or self.deck_occupancy is None:
+            return None
+        free_parking_nodes = [
+            self.deck_layout.parking_node(spot_id)
+            for spot_id, occupied_by in enumerate(self.parking_occupancy)
+            if occupied_by is None
+        ]
+        return self.deck_occupancy.find_route(
+            aircraft_id,
+            self.deck_layout.recovery_node,
+            free_parking_nodes,
+        )
+
+    def _reserve_launch_route(self, aircraft_id: int) -> DeckRouteReservation:
+        if self.deck_layout is None or self.deck_occupancy is None:
+            raise RuntimeError("spatial graph is not initialized")
+        route = self._find_launch_route(aircraft_id)
+        if route is None:
+            raise RuntimeError("no available launch route")
+        target, path, distance = route
+        source = self.deck_layout.parking_node(
+            self.aircraft[aircraft_id].spot_id
+        )
+        return self.deck_occupancy.reserve_route(
+            aircraft_id,
+            "launch_taxi",
+            source,
+            target,
+            path,
+            distance,
+            release_source=True,
+        )
+
+    def _reserve_recovery_route(self, aircraft_id: int) -> DeckRouteReservation:
+        if self.deck_layout is None or self.deck_occupancy is None:
+            raise RuntimeError("spatial graph is not initialized")
+        route = self._find_recovery_route(aircraft_id)
+        if route is None:
+            raise RuntimeError("no available recovery route")
+        target, path, distance = route
+        spot_id = self.deck_layout.parking_spot(target)
+        if self.parking_occupancy[spot_id] is not None:
+            raise RuntimeError("recovery parking destination became unavailable")
+        reservation = self.deck_occupancy.reserve_route(
+            aircraft_id,
+            "recovery_taxi",
+            self.deck_layout.recovery_node,
+            target,
+            path,
+            distance,
+            release_source=False,
+        )
+        self.parking_occupancy[spot_id] = aircraft_id
+        return reservation
+
+    def _complete_deck_route(
+        self,
+        aircraft_id: int,
+        clear_operation: bool = False,
+    ) -> DeckRouteReservation:
+        if self.deck_occupancy is None:
+            raise RuntimeError("spatial graph is not initialized")
+        reservation = self.deck_occupancy.complete_route(aircraft_id)
+        if clear_operation:
+            self.active_deck_routes.pop(aircraft_id, None)
+        self.deck_occupancy.validate()
+        return reservation
+
+    def _release_launch_position(self, aircraft_id: int) -> None:
+        if not self.spatial_graph_enabled:
+            return
+        if self.deck_occupancy is None:
+            raise RuntimeError("spatial graph is not initialized")
+        reservation = self.active_deck_routes.pop(aircraft_id)
+        self.deck_occupancy.release_target(aircraft_id, reservation.target)
+        self.deck_occupancy.validate()
+
+    def _route_target_spot(self, reservation: DeckRouteReservation) -> int:
+        if self.deck_layout is None:
+            raise RuntimeError("spatial graph is not initialized")
+        return self.deck_layout.parking_spot(reservation.target)
+
+    def _route_duration(self, reservation: DeckRouteReservation) -> float:
+        return self._route_duration_values(reservation.distance)
+
+    def _route_duration_values(self, distance: float) -> float:
+        return max(
+            float(self.config["min_process_time"]),
+            distance,
+        )
+
+    def _expected_launch_duration(self, aircraft_id: int) -> float:
+        movement_duration = 0.0
+        if self.spatial_graph_enabled:
+            route = self._find_launch_route(aircraft_id)
+            if route is None:
+                return float("inf")
+            movement_duration = self._route_duration_values(route[2])
+        return movement_duration + float(self.config["launch_time"])
+
+    def _expected_recovery_duration(self, aircraft_id: int) -> float:
+        movement_duration = 0.0
+        if self.spatial_graph_enabled:
+            route = self._find_recovery_route(aircraft_id)
+            if route is None:
+                return float("inf")
+            movement_duration = self._route_duration_values(route[2])
+        return movement_duration + float(self.config["recovery_time"])
+
+    def _deck_state(self) -> Dict[str, Any]:
+        if self.deck_layout is None or self.deck_occupancy is None:
+            return {
+                "enabled": False,
+                "active_movements": 0,
+                "free_pathway_fraction": 1.0,
+                "free_launch_positions": int(
+                    self.config.get("num_launch_positions", 1)
+                ),
+            }
+        return {
+            "enabled": True,
+            "active_movements": len(self.deck_occupancy.active_routes),
+            "free_pathway_fraction": self.deck_occupancy.free_fraction(
+                "pathway"
+            ),
+            "free_launch_positions": sum(
+                not self.deck_occupancy.occupants[node_id]
+                for node_id in self.deck_layout.launch_nodes
+            ),
+            "topology_assumption": "zoned_45_parking_19_pathway",
+        }
 
     def _build_parking_transfer_times(self) -> List[float]:
         graph = self.scenario_profile.deck_graph

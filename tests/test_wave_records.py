@@ -16,6 +16,7 @@ class WaveRecordsTest(unittest.TestCase):
                 "num_parking_spots": 2,
                 "wave_interval": 10.0,
                 "simulation_duration": 20.0,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)
@@ -34,6 +35,7 @@ class WaveRecordsTest(unittest.TestCase):
                 "launch_time": 1.0,
                 "wave_interval": 1.0,
                 "simulation_duration": 2.0,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)
@@ -55,6 +57,7 @@ class WaveRecordsTest(unittest.TestCase):
                 "launch_time": 1.0,
                 "wave_interval": 1.0,
                 "simulation_duration": 2.0,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)

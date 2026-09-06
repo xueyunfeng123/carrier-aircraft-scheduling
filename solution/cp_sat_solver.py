@@ -55,7 +55,13 @@ class CPSATSolver:
             aircraft_id = min(
                 launch_ids,
                 key=lambda item: (
-                    self.env.aircraft[item].launch_ready or self.env.time,
+                    self._priority._launch_deadline(item),
+                    self.env._expected_launch_duration(item),
+                    (
+                        self.env.aircraft[item].launch_ready
+                        if self.env.aircraft[item].launch_ready is not None
+                        else self.env.time
+                    ),
                     item,
                 ),
             )
@@ -69,7 +75,11 @@ class CPSATSolver:
         if recovery_ids:
             aircraft_id = min(
                 recovery_ids,
-                key=lambda item: (self._priority._launch_deadline(item), item),
+                key=lambda item: (
+                    self._priority._launch_deadline(item),
+                    self.env._expected_recovery_duration(item),
+                    item,
+                ),
             )
             return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
 

@@ -109,6 +109,7 @@ class EnvironmentMonitoringTest(unittest.TestCase):
                 "num_parking_spots": 2,
                 "wave_interval": 10.0,
                 "simulation_duration": 20.0,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)

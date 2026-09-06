@@ -73,20 +73,28 @@ class WaveHeuristicSolver:
     def _candidate_ids(self, low_mask: List[int]) -> List[int]:
         return [aircraft_id for aircraft_id, allowed in enumerate(low_mask) if allowed]
 
-    def _launch_priority(self, aircraft_id: int) -> Tuple[float, int, int, float, int]:
+    def _launch_priority(
+        self,
+        aircraft_id: int,
+    ) -> Tuple[float, float, int, int, float, int]:
         aircraft = self.env.aircraft[aircraft_id]
         ready_time = aircraft.launch_ready if aircraft.launch_ready is not None else self.env.time
         return (
             ready_time,
+            self.env._expected_launch_duration(aircraft_id),
             aircraft.sorties_completed,
             -aircraft.missed_sorties,
             aircraft.launch_wait,
             aircraft_id,
         )
 
-    def _recovery_priority(self, aircraft_id: int) -> Tuple[int, int, int, int]:
+    def _recovery_priority(
+        self,
+        aircraft_id: int,
+    ) -> Tuple[float, int, int, int, int]:
         aircraft = self.env.aircraft[aircraft_id]
         return (
+            self.env._expected_recovery_duration(aircraft_id),
             aircraft.sorties_completed,
             -aircraft.arm_quantity_required,
             -aircraft.missed_sorties,

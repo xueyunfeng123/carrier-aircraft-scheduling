@@ -103,6 +103,16 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     config["num_parking_spots"] = args.num_parking_spots
     config["parking_base_transfer_time"] = args.parking_base_transfer_time
     config["parking_ring_time_step"] = args.parking_ring_time_step
+    config["spatial_graph_enabled"] = not getattr(
+        args,
+        "disable_spatial_graph",
+        False,
+    )
+    config["deck_edge_travel_time"] = getattr(
+        args,
+        "deck_edge_travel_time",
+        DEFAULT_CONFIG["deck_edge_travel_time"],
+    )
     config["num_ammo_transport_vehicles"] = args.num_ammo_transport_vehicles
     config["num_lower_weapon_lifts"] = args.num_lower_weapon_lifts
     config["num_upper_weapon_lifts"] = args.num_upper_weapon_lifts
@@ -179,6 +189,16 @@ def main() -> None:
         "--parking-ring-time-step",
         type=float,
         default=DEFAULT_CONFIG["parking_ring_time_step"],
+    )
+    parser.add_argument(
+        "--disable-spatial-graph",
+        action="store_true",
+        help="disable deck routes and movement time for matched controls",
+    )
+    parser.add_argument(
+        "--deck-edge-travel-time",
+        type=float,
+        default=DEFAULT_CONFIG["deck_edge_travel_time"],
     )
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
     parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)

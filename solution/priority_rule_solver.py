@@ -86,11 +86,11 @@ class PriorityRuleSolver:
     def _expected_action_duration(self, high_level: int, aircraft_id: int) -> float:
         config = self.env.config
         if high_level == ACTION_RECOVERY:
-            return float(config["recovery_time"])
+            return self.env._expected_recovery_duration(aircraft_id)
         if high_level == ACTION_FUEL:
             return float(config["fuel_time_mean"])
         if high_level == ACTION_LAUNCH:
-            return float(config["launch_time"])
+            return self.env._expected_launch_duration(aircraft_id)
 
         aircraft = self.env.aircraft[aircraft_id]
         extract_mean = (

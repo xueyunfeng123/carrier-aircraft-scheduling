@@ -57,6 +57,7 @@ class DynamicSharedFleetTest(unittest.TestCase):
                 "launch_time": 2.0,
                 "wave_interval": 1.0,
                 "simulation_duration": 2.0,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)
@@ -82,6 +83,7 @@ class DynamicSharedFleetTest(unittest.TestCase):
                 "launch_time": 1.0,
                 "wave_interval": 10.0,
                 "simulation_duration": 30.0,
+                "spatial_graph_enabled": False,
             }
         )
         env.reset(seed=7)
