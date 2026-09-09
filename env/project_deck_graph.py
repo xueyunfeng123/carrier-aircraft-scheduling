@@ -7,6 +7,7 @@ explicit and separate from the scheduling policy.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -15,19 +16,15 @@ from env.scenario import DeckGraph, LocationEdge, LocationNode
 
 @dataclass(frozen=True)
 class ProjectDeckGraphAssumptions:
-    pathway_nodes: int = 19
-    launch_area_spots: int = 10
-    recovery_area_spots: int = 10
-    launch_positions: int = 4
+    parking_cluster_sizes: Tuple[int, int, int, int] = (10, 13, 12, 10)
+    launch_positions: int = 3
     edge_travel_minutes: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.pathway_nodes != 19:
-            raise ValueError("project deck graph currently requires 19 pathway nodes")
-        if self.launch_area_spots < 0 or self.recovery_area_spots < 0:
-            raise ValueError("parking-area sizes must be non-negative")
-        if self.launch_positions != 4:
-            raise ValueError("project deck graph currently requires four launch positions")
+        if any(size < 0 for size in self.parking_cluster_sizes):
+            raise ValueError("parking-cluster sizes must be non-negative")
+        if self.launch_positions != 3:
+            raise ValueError("Haitian layout requires three launch runways")
         if self.edge_travel_minutes <= 0:
             raise ValueError("edge travel time must be positive")
 
@@ -68,23 +65,29 @@ def build_project_deck_layout(
     num_parking_spots: int,
     assumptions: Optional[ProjectDeckGraphAssumptions] = None,
 ) -> ProjectDeckLayout:
-    """Build a zoned schematic graph from documented capacity information."""
+    """Build a four-cluster graph derived from the Haitian competition layout.
+
+    The source document supplies position geometry and interference rules, but
+    no taxiway adjacency matrix. The graph therefore preserves its four parking
+    clusters, western landing runway, and three eastern launch runways while
+    making the derived dual-corridor topology explicit.
+    """
 
     assumptions = assumptions or ProjectDeckGraphAssumptions()
     if num_parking_spots <= 0:
         raise ValueError("project deck graph requires at least one parking spot")
-    launch_area_spots = min(assumptions.launch_area_spots, num_parking_spots)
-    recovery_area_spots = min(
-        assumptions.recovery_area_spots,
-        num_parking_spots - launch_area_spots,
+    cluster_sizes = _scaled_cluster_sizes(
+        num_parking_spots,
+        assumptions.parking_cluster_sizes,
     )
-    minimum_spots = launch_area_spots + recovery_area_spots
 
     parking_nodes = tuple(
         f"deck_parking_{spot_id}" for spot_id in range(num_parking_spots)
     )
     pathway_nodes = tuple(
-        f"deck_pathway_{index}" for index in range(assumptions.pathway_nodes)
+        f"deck_pathway_{row}_{index}"
+        for row in ("north", "middle", "south")
+        for index in range(5)
     )
     launch_nodes = tuple(
         f"deck_launch_{index}" for index in range(assumptions.launch_positions)
@@ -92,19 +95,12 @@ def build_project_deck_layout(
     recovery_node = "deck_recovery_runway"
     edge_travel_minutes = assumptions.edge_travel_minutes
 
-    support_spots = (
-        num_parking_spots
-        - launch_area_spots
-        - recovery_area_spots
-    )
-    sections = []
-    for spot_id in range(num_parking_spots):
-        if spot_id < launch_area_spots:
-            sections.append("launch_parking")
-        elif spot_id < launch_area_spots + recovery_area_spots:
-            sections.append("recovery_parking")
-        else:
-            sections.append("support_parking")
+    cluster_names = ("northwest", "northeast", "southwest", "southeast")
+    sections = [
+        cluster_name
+        for cluster_name, size in zip(cluster_names, cluster_sizes)
+        for _ in range(size)
+    ]
 
     nodes: List[LocationNode] = [
         LocationNode(node_id, sections[index])
@@ -120,62 +116,76 @@ def build_project_deck_layout(
     )
     nodes.append(LocationNode(recovery_node, "recovery_runway"))
 
-    edges: List[LocationEdge] = [
-        LocationEdge(
-            pathway_nodes[index],
-            pathway_nodes[index + 1],
-            edge_travel_minutes,
-        )
-        for index in range(len(pathway_nodes) - 1)
-    ]
-
-    for spot_id, parking_node in enumerate(parking_nodes):
-        if spot_id < launch_area_spots:
-            local_index = spot_id
-            pathway_index = _spread_index(
-                local_index,
-                launch_area_spots,
-                0,
-                4,
+    pathway_index = {
+        (row, index): pathway_nodes[row_index * 5 + index]
+        for row_index, row in enumerate(("north", "middle", "south"))
+        for index in range(5)
+    }
+    edges: List[LocationEdge] = []
+    for row in ("north", "middle", "south"):
+        for index in range(4):
+            edges.append(
+                LocationEdge(
+                    pathway_index[(row, index)],
+                    pathway_index[(row, index + 1)],
+                    edge_travel_minutes,
+                )
             )
-        elif spot_id < minimum_spots:
-            local_index = spot_id - launch_area_spots
-            pathway_index = _spread_index(
-                local_index,
-                recovery_area_spots,
-                14,
-                18,
-            )
-        else:
-            local_index = spot_id - minimum_spots
-            pathway_index = _spread_index(
-                local_index,
-                support_spots,
-                5,
-                13,
-            )
-        edges.append(
-            LocationEdge(
-                parking_node,
-                pathway_nodes[pathway_index],
-                edge_travel_minutes,
+    for index in (1, 2, 3):
+        edges.extend(
+            (
+                LocationEdge(
+                    pathway_index[("north", index)],
+                    pathway_index[("middle", index)],
+                    edge_travel_minutes,
+                ),
+                LocationEdge(
+                    pathway_index[("middle", index)],
+                    pathway_index[("south", index)],
+                    edge_travel_minutes,
+                ),
             )
         )
 
-    launch_connections = (0, 2, 16, 18)
+    cluster_anchors = (
+        tuple(pathway_index[("north", index)] for index in (0, 1)),
+        tuple(pathway_index[("north", index)] for index in (3, 4)),
+        tuple(pathway_index[("south", index)] for index in (0, 1)),
+        tuple(pathway_index[("south", index)] for index in (3, 4)),
+    )
+    spot_id = 0
+    for cluster_size, anchors in zip(cluster_sizes, cluster_anchors):
+        for local_index in range(cluster_size):
+            parking_node = parking_nodes[spot_id]
+            anchor = anchors[
+                _spread_index(local_index, cluster_size, 0, len(anchors) - 1)
+            ]
+            edges.append(
+                LocationEdge(
+                    parking_node,
+                    anchor,
+                    edge_travel_minutes,
+                )
+            )
+            spot_id += 1
+
+    launch_connections = (
+        pathway_index[("north", 4)],
+        pathway_index[("middle", 4)],
+        pathway_index[("south", 4)],
+    )
     for index, launch_node in enumerate(launch_nodes):
-        connection = launch_connections[min(index, len(launch_connections) - 1)]
         edges.append(
             LocationEdge(
                 launch_node,
-                pathway_nodes[connection],
+                launch_connections[index],
                 edge_travel_minutes,
             )
         )
     edges.append(
         LocationEdge(
             recovery_node,
-            pathway_nodes[18],
+            pathway_index[("middle", 0)],
             edge_travel_minutes,
         )
     )
@@ -306,3 +316,25 @@ def _spread_index(
     if count <= 1:
         return start
     return round(start + local_index * (end - start) / (count - 1))
+
+
+def _scaled_cluster_sizes(
+    total: int,
+    requested: Tuple[int, int, int, int],
+) -> Tuple[int, int, int, int]:
+    if sum(requested) == total:
+        return requested
+    weight = sum(requested)
+    if weight <= 0:
+        raise ValueError("parking-cluster weights must contain capacity")
+    raw = [total * size / weight for size in requested]
+    sizes = [math.floor(value) for value in raw]
+    remainder = total - sum(sizes)
+    order = sorted(
+        range(len(raw)),
+        key=lambda index: (raw[index] - sizes[index], -index),
+        reverse=True,
+    )
+    for index in order[:remainder]:
+        sizes[index] += 1
+    return tuple(sizes)  # type: ignore[return-value]

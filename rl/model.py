@@ -32,6 +32,7 @@ class CarrierPolicyValueNet(nn.Module):
         hidden_dim: int = 128,
         aircraft_embed_dim: int = 64,
         action_conditioned_low_head: bool = True,
+        num_high_actions: int = 5,
     ):
         super().__init__()
         self.aircraft_feature_dim = aircraft_feature_dim
@@ -39,6 +40,7 @@ class CarrierPolicyValueNet(nn.Module):
         self.hidden_dim = hidden_dim
         self.aircraft_embed_dim = aircraft_embed_dim
         self.action_conditioned_low_head = action_conditioned_low_head
+        self.num_high_actions = num_high_actions
 
         self.aircraft_encoder = nn.Sequential(
             nn.Linear(aircraft_feature_dim, hidden_dim),
@@ -52,9 +54,9 @@ class CarrierPolicyValueNet(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.high_head = nn.Linear(hidden_dim, 4)
+        self.high_head = nn.Linear(hidden_dim, num_high_actions)
         self.low_context = nn.Linear(hidden_dim, aircraft_embed_dim)
-        low_output_dim = 4 if action_conditioned_low_head else 1
+        low_output_dim = num_high_actions if action_conditioned_low_head else 1
         self.low_head = nn.Linear(aircraft_embed_dim * 2, low_output_dim)
         self.value_head = nn.Linear(hidden_dim, 1)
 
@@ -83,4 +85,5 @@ class CarrierPolicyValueNet(nn.Module):
             "hidden_dim": self.hidden_dim,
             "aircraft_embed_dim": self.aircraft_embed_dim,
             "action_conditioned_low_head": self.action_conditioned_low_head,
+            "num_high_actions": self.num_high_actions,
         }

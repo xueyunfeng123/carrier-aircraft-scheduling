@@ -12,6 +12,7 @@ ACTION_RECOVERY = 0
 ACTION_FUEL = 1
 ACTION_ARM = 2
 ACTION_LAUNCH = 3
+ACTION_INSPECTION = 4
 
 
 class WaveHeuristicSolver:
@@ -36,6 +37,18 @@ class WaveHeuristicSolver:
         if high_mask[ACTION_LAUNCH]:
             aircraft_id = self._choose_launch_aircraft(mask["low_level_by_high"][ACTION_LAUNCH])
             return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
+
+        if high_mask[ACTION_INSPECTION]:
+            aircraft_id = min(
+                self._candidate_ids(
+                    mask["low_level_by_high"][ACTION_INSPECTION]
+                ),
+                key=self._inspection_priority,
+            )
+            return {
+                "high_level": ACTION_INSPECTION,
+                "aircraft_id": aircraft_id,
+            }
 
         fuel_candidate = None
         arm_candidate = None
@@ -106,6 +119,11 @@ class WaveHeuristicSolver:
         remaining = 0.0
         if aircraft.fuel_status == 0:
             remaining = max(remaining, self._fuel_mean)
+        if aircraft.inspection_status == 0:
+            remaining = max(
+                remaining,
+                float(self.env.config["inspection_time_mean"]),
+            )
         if aircraft.arm_status == 1:
             remaining = max(remaining, aircraft.arm_remaining)
         if aircraft.arm_status == 0:
@@ -118,6 +136,19 @@ class WaveHeuristicSolver:
             )
         time_to_launch = self._time_until_launch_deadline(remaining)
         return time_to_launch - remaining
+
+    def _inspection_priority(
+        self,
+        aircraft_id: int,
+    ) -> Tuple[int, float, float, int]:
+        remaining = float(self.env.config["inspection_time_mean"])
+        time_to_deadline = self._time_until_launch_deadline(remaining)
+        return (
+            int(time_to_deadline - remaining < 0.0),
+            time_to_deadline,
+            -self.env.aircraft[aircraft_id].inspection_wait,
+            aircraft_id,
+        )
 
     def _time_until_launch_deadline(self, required_work: float = 0.0) -> float:
         wave_index = self.env.current_wave_index

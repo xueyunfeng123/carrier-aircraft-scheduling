@@ -8,6 +8,7 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from solution.priority_rule_solver import (
     ACTION_ARM,
     ACTION_FUEL,
+    ACTION_INSPECTION,
     ACTION_LAUNCH,
     ACTION_RECOVERY,
     PriorityRuleSolver,
@@ -85,7 +86,7 @@ class CPSATSolver:
 
         service_actions = [
             (high_level, aircraft_id)
-            for high_level in (ACTION_FUEL, ACTION_ARM)
+            for high_level in (ACTION_FUEL, ACTION_ARM, ACTION_INSPECTION)
             if mask["high_level"][high_level]
             for aircraft_id in self._candidate_ids(mask, high_level)
         ]
@@ -129,7 +130,15 @@ class CPSATSolver:
             for (action, _), variable in variables.items()
             if action == ACTION_ARM
         ]
+        inspection_vars = [
+            variable
+            for (action, _), variable in variables.items()
+            if action == ACTION_INSPECTION
+        ]
         model.Add(sum(fuel_vars) <= self.env.free_fuel_servers)
+        model.Add(
+            sum(inspection_vars) <= self.env.free_inspection_vehicles
+        )
         model.Add(
             sum(arm_vars)
             <= min(
@@ -139,9 +148,13 @@ class CPSATSolver:
         )
 
         fuel_personnel = int(self.env.config["fuel_personnel_required"])
+        inspection_personnel = int(
+            self.env.config["inspection_personnel_required"]
+        )
         arm_personnel = int(self.env.config["arm_personnel_required"])
         model.Add(
             fuel_personnel * sum(fuel_vars)
+            + inspection_personnel * sum(inspection_vars)
             + arm_personnel * sum(arm_vars)
             <= self.env.free_personnel
         )

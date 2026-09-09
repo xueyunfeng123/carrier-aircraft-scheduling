@@ -11,6 +11,7 @@ ACTION_RECOVERY = 0
 ACTION_FUEL = 1
 ACTION_ARM = 2
 ACTION_LAUNCH = 3
+ACTION_INSPECTION = 4
 
 
 class PriorityRuleSolver:
@@ -81,6 +82,8 @@ class PriorityRuleSolver:
             return aircraft.fuel_wait
         if high_level == ACTION_ARM:
             return aircraft.arm_wait
+        if high_level == ACTION_INSPECTION:
+            return aircraft.inspection_wait
         return aircraft.launch_wait
 
     def _expected_action_duration(self, high_level: int, aircraft_id: int) -> float:
@@ -89,6 +92,8 @@ class PriorityRuleSolver:
             return self.env._expected_recovery_duration(aircraft_id)
         if high_level == ACTION_FUEL:
             return float(config["fuel_time_mean"])
+        if high_level == ACTION_INSPECTION:
+            return float(config["inspection_time_mean"])
         if high_level == ACTION_LAUNCH:
             return self.env._expected_launch_duration(aircraft_id)
 

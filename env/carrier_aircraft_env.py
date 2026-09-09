@@ -49,13 +49,16 @@ class AircraftRecord:
     last_missed_wave: Optional[int] = None
     recovery_status: int = 0
     fuel_status: int = 0
+    inspection_status: int = 0
     arm_status: int = 0
     arm_stage: int = 0
     launch_status: int = 0
     arm_quantity_required: int = 0
     fuel_remaining: float = 0.0
+    inspection_remaining: float = 0.0
     arm_remaining: float = 0.0
     fuel_wait: float = 0.0
+    inspection_wait: float = 0.0
     arm_wait: float = 0.0
     launch_wait: float = 0.0
     recovery_start: Optional[float] = None
@@ -64,6 +67,8 @@ class AircraftRecord:
     park_end: Optional[float] = None
     fuel_start: Optional[float] = None
     fuel_end: Optional[float] = None
+    inspection_start: Optional[float] = None
+    inspection_end: Optional[float] = None
     arm_start: Optional[float] = None
     ammo_extract_start: Optional[float] = None
     ammo_to_assembly_end: Optional[float] = None
@@ -88,16 +93,27 @@ class AircraftRecord:
             self.missed_sorties,
             self.recovery_status,
             self.fuel_status,
+            self.inspection_status,
             self.arm_status,
             self.arm_stage,
             self.launch_status,
             self.arm_quantity_required,
             self.fuel_remaining,
+            self.inspection_remaining,
             self.arm_remaining,
             self.fuel_wait,
+            self.inspection_wait,
             self.arm_wait,
             self.launch_wait,
         ]
+
+
+@dataclass
+class ServiceVehicleRecord:
+    vehicle_id: str
+    service_type: str
+    node_id: str
+    busy_aircraft_id: Optional[int] = None
 
 
 class CarrierAircraftSchedulingEnv:
@@ -184,6 +200,7 @@ class CarrierAircraftSchedulingEnv:
                     pending_recovery=False,
                     recovery_status=2,
                     fuel_status=2,
+                    inspection_status=2,
                     arm_status=2,
                     launch_status=1,
                 )
@@ -194,17 +211,23 @@ class CarrierAircraftSchedulingEnv:
         self.free_recovery_channels = int(self.config["num_recovery_channels"])
         self.free_launch_channels = int(self.config["num_launch_channels"])
         self.free_fuel_servers = int(self.config["num_fuel_servers"])
+        self.free_inspection_vehicles = int(
+            self.config["num_inspection_vehicles"]
+        )
         self.free_arm_vehicles = int(self.config["num_arm_vehicles"])
         self.free_ammo_transport_vehicles = int(self.config["num_ammo_transport_vehicles"])
         self.free_lower_weapon_lifts = int(self.config["num_lower_weapon_lifts"])
         self.free_upper_weapon_lifts = int(self.config["num_upper_weapon_lifts"])
         self.free_personnel = int(self.config["num_personnel"])
+        self.service_vehicles = self._build_service_vehicle_fleet()
+        self.active_service_vehicles: Dict[Tuple[str, int], str] = {}
 
         self.total_reward = 0.0
         self.done = False
         self.last_completed_counts = {
             "recovery": 0,
             "fuel": 0,
+            "inspection": 0,
             "arm": 0,
             "launch": 0,
         }
@@ -259,6 +282,8 @@ class CarrierAircraftSchedulingEnv:
             self._start_arming(aircraft_id)
         elif action_name == "L":
             self._start_launch(aircraft_id)
+        elif action_name == "I":
+            self._start_inspection(aircraft_id)
 
         info = self._make_info(action_started=action_name)
         return self.get_state(), 0.0, self.done, info
@@ -270,6 +295,7 @@ class CarrierAircraftSchedulingEnv:
             "resources": {
                 "recovery_channels": self.free_recovery_channels,
                 "fuel_servers": self.free_fuel_servers,
+                "inspection_vehicles": self.free_inspection_vehicles,
                 "arm_vehicles": self.free_arm_vehicles,
                 "ammo_transport_vehicles": self.free_ammo_transport_vehicles,
                 "lower_weapon_lifts": self.free_lower_weapon_lifts,
@@ -299,6 +325,15 @@ class CarrierAircraftSchedulingEnv:
                 "reserve_aircraft": self.num_reserve_aircraft,
             },
             "deck": self._deck_state(),
+            "service_vehicles": [
+                {
+                    "vehicle_id": vehicle.vehicle_id,
+                    "service_type": vehicle.service_type,
+                    "node_id": vehicle.node_id,
+                    "busy_aircraft_id": vehicle.busy_aircraft_id,
+                }
+                for vehicle in self.service_vehicles
+            ],
         }
 
     def get_action_mask(self, high_level_action: Optional[int] = None) -> Dict[str, Any]:
@@ -331,6 +366,12 @@ class CarrierAircraftSchedulingEnv:
                 and self.free_personnel >= int(self.config["arm_personnel_required"])
             ),
             int(len(candidates["L"]) > 0 and self.free_launch_channels > 0),
+            int(
+                len(candidates["I"]) > 0
+                and self.free_inspection_vehicles > 0
+                and self.free_personnel
+                >= int(self.config["inspection_personnel_required"])
+            ),
         ]
 
     def get_low_level_action_mask(self, high_level_action: int) -> List[int]:
@@ -365,6 +406,8 @@ class CarrierAircraftSchedulingEnv:
                     "park_end": item.park_end,
                     "fuel_start": item.fuel_start,
                     "fuel_end": item.fuel_end,
+                    "inspection_start": item.inspection_start,
+                    "inspection_end": item.inspection_end,
                     "arm_start": item.arm_start,
                     "ammo_extract_start": item.ammo_extract_start,
                     "ammo_to_assembly_end": item.ammo_to_assembly_end,
@@ -432,7 +475,7 @@ class CarrierAircraftSchedulingEnv:
     def _advance_time_to_next_event(self) -> Tuple[float, Dict[str, int]]:
         if not self.event_queue:
             self.done = self.time >= self.simulation_duration
-            completed = {"recovery": 0, "fuel": 0, "arm": 0, "launch": 0}
+            completed = self._empty_completed_counts()
             return 0.0, completed
 
         next_time = self.event_queue[0].time
@@ -441,7 +484,7 @@ class CarrierAircraftSchedulingEnv:
             self._update_waiting_and_remaining(delta)
             self.time = self.simulation_duration
             self.done = True
-            completed = {"recovery": 0, "fuel": 0, "arm": 0, "launch": 0}
+            completed = self._empty_completed_counts()
             reward = self._calculate_time_reward(delta, completed)
             return reward, completed
 
@@ -458,7 +501,7 @@ class CarrierAircraftSchedulingEnv:
         return reward, completed
 
     def _process_events_at_current_time(self) -> Dict[str, int]:
-        completed = {"recovery": 0, "fuel": 0, "arm": 0, "launch": 0}
+        completed = self._empty_completed_counts()
         events: List[Event] = []
         while self.event_queue and self.event_queue[0].time == self.time:
             events.append(heapq.heappop(self.event_queue))
@@ -504,6 +547,7 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.recovery_due_wave = None
                 aircraft.is_airborne = False
                 aircraft.launch_status = 0
+                aircraft.inspection_status = 0
                 aircraft.arm_quantity_required = self._sample_arm_quantity()
                 self.free_recovery_channels += 1
                 completed["recovery"] += 1
@@ -515,14 +559,26 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.fuel_remaining = 0.0
                 aircraft.fuel_end = self.time
                 self.free_fuel_servers += 1
+                self._release_service_vehicle("fuel", event.aircraft_id)
                 self.free_personnel += int(self.config["fuel_personnel_required"])
                 completed["fuel"] += 1
+            elif event.event_type == "inspection_done":
+                aircraft.inspection_status = 2
+                aircraft.inspection_remaining = 0.0
+                aircraft.inspection_end = self.time
+                self.free_inspection_vehicles += 1
+                self._release_service_vehicle("inspection", event.aircraft_id)
+                self.free_personnel += int(
+                    self.config["inspection_personnel_required"]
+                )
+                completed["inspection"] += 1
             elif event.event_type == "arm_done":
                 aircraft.arm_status = 2
                 aircraft.arm_stage = 4
                 aircraft.arm_remaining = 0.0
                 aircraft.arm_end = self.time
                 self.free_arm_vehicles += 1
+                self._release_service_vehicle("arm", event.aircraft_id)
                 self.free_upper_weapon_lifts += 1
                 self.free_personnel += int(self.config["arm_personnel_required"])
                 completed["arm"] += 1
@@ -565,6 +621,7 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.spot_id = -1
                 aircraft.recovery_status = 0
                 aircraft.fuel_status = 0
+                aircraft.inspection_status = 0
                 aircraft.arm_status = 0
                 aircraft.arm_stage = 0
                 aircraft.arm_quantity_required = 0
@@ -577,6 +634,7 @@ class CarrierAircraftSchedulingEnv:
                 and aircraft.parking_status == 2
                 and aircraft.recovery_status == 2
                 and aircraft.fuel_status == 2
+                and aircraft.inspection_status == 2
                 and aircraft.arm_status == 2
                 and aircraft.launch_status == 0
             ):
@@ -619,13 +677,57 @@ class CarrierAircraftSchedulingEnv:
     def _start_fueling(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
         duration = self._sample_duration("fuel_time_mean", "fuel_time_std")
+        vehicle, travel_duration = self._dispatch_service_vehicle(
+            "fuel",
+            aircraft_id,
+        )
         aircraft.fuel_status = 1
         aircraft.fuel_start = self.time
-        aircraft.fuel_remaining = duration
+        aircraft.fuel_remaining = travel_duration + duration
         self.free_fuel_servers -= 1
         self.free_personnel -= int(self.config["fuel_personnel_required"])
-        self._log_event("fuel_start", aircraft_id, duration=duration)
-        self._push_event(self.time + duration, "fuel_done", aircraft_id)
+        self._log_event(
+            "fuel_start",
+            aircraft_id,
+            duration=duration,
+            vehicle_id=vehicle.vehicle_id,
+            travel_duration=travel_duration,
+        )
+        self._push_event(
+            self.time + travel_duration + duration,
+            "fuel_done",
+            aircraft_id,
+        )
+
+    def _start_inspection(self, aircraft_id: int) -> None:
+        aircraft = self.aircraft[aircraft_id]
+        duration = self._sample_duration(
+            "inspection_time_mean",
+            "inspection_time_std",
+        )
+        vehicle, travel_duration = self._dispatch_service_vehicle(
+            "inspection",
+            aircraft_id,
+        )
+        aircraft.inspection_status = 1
+        aircraft.inspection_start = self.time
+        aircraft.inspection_remaining = travel_duration + duration
+        self.free_inspection_vehicles -= 1
+        self.free_personnel -= int(
+            self.config["inspection_personnel_required"]
+        )
+        self._log_event(
+            "inspection_start",
+            aircraft_id,
+            duration=duration,
+            vehicle_id=vehicle.vehicle_id,
+            travel_duration=travel_duration,
+        )
+        self._push_event(
+            self.time + travel_duration + duration,
+            "inspection_done",
+            aircraft_id,
+        )
 
     def _start_arming(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
@@ -707,20 +809,31 @@ class CarrierAircraftSchedulingEnv:
 
     def _start_deck_arming(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
+        vehicle, vehicle_travel_duration = self._dispatch_service_vehicle(
+            "arm",
+            aircraft_id,
+        )
         duration = (
             self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
-            + self._spot_transfer_time(aircraft.spot_id)
+            + vehicle_travel_duration
             + self._sample_arming_duration(aircraft.arm_quantity_required)
         )
         aircraft.arm_stage = 3
         aircraft.deck_arm_start = self.time
+        aircraft.arm_remaining = duration
         self.free_arm_vehicles -= 1
         self.free_upper_weapon_lifts -= 1
-        self._log_event("deck_arm_start", aircraft_id, duration=duration)
+        self._log_event(
+            "deck_arm_start",
+            aircraft_id,
+            duration=duration,
+            vehicle_id=vehicle.vehicle_id,
+            travel_duration=vehicle_travel_duration,
+        )
         self._push_event(self.time + duration, "arm_done", aircraft_id)
 
     def _candidate_sets(self) -> Dict[str, List[int]]:
-        candidates = {"R": [], "F": [], "M": [], "L": []}
+        candidates = {"R": [], "F": [], "M": [], "L": [], "I": []}
         launch_capacity_available = (
             self.wave_records[-1]["launches_started"] < self.group_size
         )
@@ -745,6 +858,13 @@ class CarrierAircraftSchedulingEnv:
                 not aircraft.is_airborne
                 and aircraft.parking_status == 2
                 and aircraft.recovery_status == 2
+                and aircraft.inspection_status == 0
+            ):
+                candidates["I"].append(aircraft_id)
+            if (
+                not aircraft.is_airborne
+                and aircraft.parking_status == 2
+                and aircraft.recovery_status == 2
                 and aircraft.arm_status == 0
             ):
                 candidates["M"].append(aircraft_id)
@@ -765,6 +885,7 @@ class CarrierAircraftSchedulingEnv:
                 and not aircraft.is_airborne
                 and aircraft.parking_status == 2
                 and aircraft.fuel_status == 2
+                and aircraft.inspection_status == 2
                 and aircraft.arm_status == 2
                 and aircraft.launch_status == 1
                 and (
@@ -1018,7 +1139,7 @@ class CarrierAircraftSchedulingEnv:
                 not self.deck_occupancy.occupants[node_id]
                 for node_id in self.deck_layout.launch_nodes
             ),
-            "topology_assumption": "zoned_45_parking_19_pathway",
+            "topology_assumption": "haitian_45_parking_dual_corridor",
         }
 
     def _build_parking_transfer_times(self) -> List[float]:
@@ -1034,6 +1155,93 @@ class CarrierAircraftSchedulingEnv:
         if spot_id < 0:
             return 0.0
         return float(self.parking_transfer_times[spot_id])
+
+    def _build_service_vehicle_fleet(self) -> List[ServiceVehicleRecord]:
+        vehicles: List[ServiceVehicleRecord] = []
+        specifications = (
+            ("fuel", int(self.config["num_fuel_servers"])),
+            ("inspection", int(self.config["num_inspection_vehicles"])),
+            ("arm", int(self.config["num_arm_vehicles"])),
+        )
+        depot_spots = (0, 10, 23, 35)
+        for service_type, count in specifications:
+            for index in range(count):
+                spot_id = depot_spots[index % len(depot_spots)]
+                spot_id = min(spot_id, self.num_parking_spots - 1)
+                node_id = (
+                    self.deck_layout.parking_node(spot_id)
+                    if self.deck_layout is not None
+                    else f"parking_{spot_id}"
+                )
+                vehicles.append(
+                    ServiceVehicleRecord(
+                        vehicle_id=f"{service_type}_{index}",
+                        service_type=service_type,
+                        node_id=node_id,
+                    )
+                )
+        return vehicles
+
+    def _dispatch_service_vehicle(
+        self,
+        service_type: str,
+        aircraft_id: int,
+    ) -> Tuple[ServiceVehicleRecord, float]:
+        available = [
+            vehicle
+            for vehicle in self.service_vehicles
+            if vehicle.service_type == service_type
+            and vehicle.busy_aircraft_id is None
+        ]
+        if not available:
+            raise RuntimeError(f"no free {service_type} service vehicle")
+        aircraft = self.aircraft[aircraft_id]
+        if aircraft.spot_id < 0:
+            raise RuntimeError("service vehicle target has no parking spot")
+        target = (
+            self.deck_layout.parking_node(aircraft.spot_id)
+            if self.deck_layout is not None
+            else f"parking_{aircraft.spot_id}"
+        )
+
+        def travel_time(vehicle: ServiceVehicleRecord) -> float:
+            if self.deck_layout is None:
+                return self._spot_transfer_time(aircraft.spot_id)
+            return self.deck_layout.graph.shortest_distance(
+                vehicle.node_id,
+                target,
+            )
+
+        vehicle = min(
+            available,
+            key=lambda item: (travel_time(item), item.vehicle_id),
+        )
+        duration = travel_time(vehicle)
+        vehicle.busy_aircraft_id = aircraft_id
+        self.active_service_vehicles[(service_type, aircraft_id)] = (
+            vehicle.vehicle_id
+        )
+        return vehicle, duration
+
+    def _release_service_vehicle(
+        self,
+        service_type: str,
+        aircraft_id: int,
+    ) -> None:
+        vehicle_id = self.active_service_vehicles.pop(
+            (service_type, aircraft_id)
+        )
+        vehicle = next(
+            item for item in self.service_vehicles
+            if item.vehicle_id == vehicle_id
+        )
+        aircraft = self.aircraft[aircraft_id]
+        vehicle.node_id = (
+            self.deck_layout.parking_node(aircraft.spot_id)
+            if self.deck_layout is not None
+            else f"parking_{aircraft.spot_id}"
+        )
+        vehicle.busy_aircraft_id = None
 
     def _assign_parking_spot(self, aircraft_id: int) -> int:
         free_spots = [
@@ -1152,12 +1360,22 @@ class CarrierAircraftSchedulingEnv:
         for aircraft in self.aircraft:
             if aircraft.recovery_status == 2 and aircraft.fuel_status == 0:
                 aircraft.fuel_wait += delta
+            if (
+                aircraft.recovery_status == 2
+                and aircraft.inspection_status == 0
+            ):
+                aircraft.inspection_wait += delta
             if aircraft.recovery_status == 2 and aircraft.arm_status == 0:
                 aircraft.arm_wait += delta
             if aircraft.launch_status == 1:
                 aircraft.launch_wait += delta
             if aircraft.fuel_status == 1:
                 aircraft.fuel_remaining = max(0.0, aircraft.fuel_remaining - delta)
+            if aircraft.inspection_status == 1:
+                aircraft.inspection_remaining = max(
+                    0.0,
+                    aircraft.inspection_remaining - delta,
+                )
             if aircraft.arm_status == 1 and aircraft.arm_stage in (1, 3):
                 aircraft.arm_remaining = max(0.0, aircraft.arm_remaining - delta)
 
@@ -1166,9 +1384,20 @@ class CarrierAircraftSchedulingEnv:
             -float(self.config["alpha"]) * delta
             + float(self.config["beta_recovery"]) * completed["recovery"]
             + float(self.config["beta_fuel"]) * completed["fuel"]
+            + float(self.config["beta_inspection"]) * completed["inspection"]
             + float(self.config["beta_arm"]) * completed["arm"]
             + float(self.config["beta_launch"]) * completed["launch"]
         )
+
+    @staticmethod
+    def _empty_completed_counts() -> Dict[str, int]:
+        return {
+            "recovery": 0,
+            "fuel": 0,
+            "inspection": 0,
+            "arm": 0,
+            "launch": 0,
+        }
 
     def _parse_action(self, action: Any) -> Optional[Tuple[int, int]]:
         if isinstance(action, dict):

@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
+from env.config import HIGH_LEVEL_ACTIONS
 
 
-AIRCRAFT_FEATURE_DIM = 18
-GLOBAL_FEATURE_DIM = 19
-OBSERVATION_SCHEMA_VERSION = 3
+AIRCRAFT_FEATURE_DIM = 21
+GLOBAL_FEATURE_DIM = 20
+OBSERVATION_SCHEMA_VERSION = 4
 
 
 @dataclass
@@ -39,7 +40,7 @@ def encode_observation(env: CarrierAircraftSchedulingEnv) -> EncodedObservation:
     mask = env.get_action_mask()
     low_masks = [
         [int(value) for value in mask["low_level_by_high"][action_id]]
-        for action_id in range(4)
+        for action_id in HIGH_LEVEL_ACTIONS
     ]
     return EncodedObservation(
         aircraft=aircraft_features,
@@ -118,14 +119,17 @@ def _normalize_aircraft(
         row[7] / 2.0,
         row[8] / 2.0,
         row[9] / 2.0,
-        row[10] / 4.0,
-        row[11] / 3.0,
-        row[12] / 4.0,
-        row[13] / simulation_duration,
+        row[10] / 2.0,
+        row[11] / 4.0,
+        row[12] / 3.0,
+        row[13] / 4.0,
         row[14] / simulation_duration,
         row[15] / simulation_duration,
         row[16] / simulation_duration,
         row[17] / simulation_duration,
+        row[18] / simulation_duration,
+        row[19] / simulation_duration,
+        row[20] / simulation_duration,
     ]
 
 
@@ -162,6 +166,8 @@ def _encode_global_features(
         time_to_next_wave / wave_interval,
         resources["recovery_channels"] / max(1.0, float(config["num_recovery_channels"])),
         resources["fuel_servers"] / max(1.0, float(config["num_fuel_servers"])),
+        resources["inspection_vehicles"]
+        / max(1.0, float(config["num_inspection_vehicles"])),
         resources["arm_vehicles"] / max(1.0, float(config["num_arm_vehicles"])),
         resources["ammo_transport_vehicles"] / max(1.0, float(config["num_ammo_transport_vehicles"])),
         resources["lower_weapon_lifts"] / max(1.0, float(config["num_lower_weapon_lifts"])),

@@ -10,6 +10,7 @@ HIGH_LEVEL_ACTIONS = {
     1: "F",  # Fueling
     2: "M",  # Arming
     3: "L",  # Launch
+    4: "I",  # Inspection
 }
 
 ACTION_TO_INDEX = {value: key for key, value in HIGH_LEVEL_ACTIONS.items()}
@@ -23,24 +24,28 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "parking_base_transfer_time": 2.0,
     "parking_ring_time_step": 1.0,
     "spatial_graph_enabled": True,
-    "num_launch_positions": 4,
+    "num_launch_positions": 3,
     "deck_edge_travel_time": 1.0,
     "wave_interval": 120.0,
     "simulation_duration": 720.0,
     "num_recovery_channels": 1,
-    "num_launch_channels": 1,
+    "num_launch_channels": 3,
     "num_fuel_servers": 20,
+    "num_inspection_vehicles": 10,
     "num_arm_vehicles": 10,
     "num_ammo_transport_vehicles": 10,
     "num_lower_weapon_lifts": 6,
     "num_upper_weapon_lifts": 4,
     "num_personnel": 50,
     "fuel_personnel_required": 4,
+    "inspection_personnel_required": 2,
     "arm_personnel_required": 4,
     "recovery_time": 1.0,
     "launch_time": 1.0,
     "fuel_time_mean": 20.0,
     "fuel_time_std": 3.0,
+    "inspection_time_mean": 8.0,
+    "inspection_time_std": 1.0,
     "arm_unit_time_mean": 5.0,
     "arm_unit_time_variance": 2.0,
     "ammo_extract_time_min": 5.0,
@@ -55,6 +60,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "alpha": 1.0,
     "beta_recovery": 0.1,
     "beta_fuel": 0.2,
+    "beta_inspection": 0.2,
     "beta_arm": 0.2,
     "beta_launch": 1.0,
     "eta_idle": 1.0,

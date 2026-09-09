@@ -8,7 +8,7 @@ import statistics
 from typing import Any, Dict, List, Type
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
-from env.config import DEFAULT_CONFIG
+from env.config import DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
 from scripts.evaluation_defaults import (
     DEFAULT_EVALUATION_DURATION,
     DEFAULT_EVALUATION_SEED,
@@ -62,7 +62,7 @@ def run_episode(
 
     total_reward = 0.0
     steps = 0
-    started_actions = {"R": 0, "F": 0, "M": 0, "L": 0}
+    started_actions = {name: 0 for name in HIGH_LEVEL_ACTIONS.values()}
 
     while not env.done and steps < max_steps:
         action = solver.choose_action()

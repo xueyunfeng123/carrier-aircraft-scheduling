@@ -86,10 +86,10 @@ class PolicyNetworkTest(unittest.TestCase):
         env.step({"high_level": 3, "aircraft_id": 0})
         moving = encode_observation(env)
 
-        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 3)
+        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 4)
         self.assertEqual(len(initial.global_features), GLOBAL_FEATURE_DIM)
-        self.assertEqual(initial.global_features[14], 1.0)
-        self.assertLess(moving.global_features[14], 1.0)
+        self.assertEqual(initial.global_features[15], 1.0)
+        self.assertLess(moving.global_features[15], 1.0)
 
     def test_low_level_logits_are_conditioned_on_high_level_action(self) -> None:
         import torch
@@ -100,8 +100,8 @@ class PolicyNetworkTest(unittest.TestCase):
             torch.zeros(2, GLOBAL_FEATURE_DIM),
         )
 
-        self.assertEqual(tuple(high_logits.shape), (2, 4))
-        self.assertEqual(tuple(low_logits.shape), (2, 4, 40))
+        self.assertEqual(tuple(high_logits.shape), (2, 5))
+        self.assertEqual(tuple(low_logits.shape), (2, 5, 40))
         self.assertEqual(tuple(values.shape), (2,))
 
     def test_legacy_low_level_head_shape_remains_available(self) -> None:

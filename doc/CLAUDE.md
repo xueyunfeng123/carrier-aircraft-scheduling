@@ -364,21 +364,33 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 ### `experiment/spatial-deck-graph`
 
 - Parent commit: `689c008` on `experiment/dynamic-shared-fleet`.
-- Maps the supplied 45 parking spots into 10 launch-area, 10 recovery-area,
-  and 25 support-area capacity-one nodes, with four launch-position nodes and
-  one recovery-runway node.
-- Reuses 19 pathway nodes as a structural scale from Yoon 2023. The adjacency
-  pattern, one-minute edge time, and atomic whole-route reservation are
-  explicit assumptions because no project deck geometry is available.
+- The first structural commit (`e108537`) used a 19-node single pathway,
+  four launch positions, and atomic whole-route reservations.
+- The active worktree now replaces that provisional graph with a layout
+  derived from `doc/海天杯-技术资料0929更新.pdf`: 45 parking spots in four
+  clusters, three launch runways, one landing runway, and north/middle/south
+  corridors with cross-connections.
+- The source document supplies position geometry and interference tables but
+  not a taxiway adjacency matrix. Corridor edges and one-minute edge weights
+  remain explicit project assumptions.
 - Launch reserves a parking-to-launch route before taxi; recovery reserves the
   runway-to-parking route and destination before recovery starts. Conflicting
   routes are removed by the action mask.
-- Heuristic, SPT, and CP-SAT duration estimates include route time. RL global
-  state includes free pathway fraction and uses observation schema version 3.
+- Fuel, inspection, and arming now use separate mobile vehicle pools. Vehicles
+  have locations, include travel time in service completion, and may serve the
+  same parked aircraft concurrently when their operations do not conflict.
+- Inspection is a fifth high-level action. RL uses 21 aircraft features,
+  20 global features, and observation schema version 4.
+- Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
+- All 33 unit tests pass. A three-wave, 60-minute, seed-10007 smoke run
+  completed without deadlock: Random/FIFO/SPT/EDD/Heuristic/Sampled/CP-SAT
+  completed 52/52/48/58/50/55/50 launches.
+- Detailed assumptions and remaining work are in
+  `doc/haitian_deck_environment_spec.md`.
 - Fixed `seed=10007`, 60-minute, 12-wave results with the graph enabled are:
   Random 66, FIFO 74, SPT 90, EDD 53, Heuristic 93, SampledRandom 77, and
   CP-SAT 86. The matched graph-disabled totals remain 143/152/157/158/157/
-  143/162.
+  143/162. These values belong to the superseded single-pathway graph.
 - The large throughput reduction is evidence that the current atomic
   reservation assumption is restrictive, not evidence of real carrier
   capacity. Calibrate topology, edge times, and movement granularity before

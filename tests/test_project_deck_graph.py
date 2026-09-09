@@ -17,11 +17,12 @@ class ProjectDeckLayoutTest(unittest.TestCase):
         layout = build_project_deck_layout(45)
 
         self.assertEqual(len(layout.parking_nodes), 45)
-        self.assertEqual(len(layout.pathway_nodes), 19)
-        self.assertEqual(len(layout.launch_nodes), 4)
-        self.assertEqual(layout.parking_sections.count("launch_parking"), 10)
-        self.assertEqual(layout.parking_sections.count("recovery_parking"), 10)
-        self.assertEqual(layout.parking_sections.count("support_parking"), 25)
+        self.assertEqual(len(layout.pathway_nodes), 15)
+        self.assertEqual(len(layout.launch_nodes), 3)
+        self.assertEqual(layout.parking_sections.count("northwest"), 10)
+        self.assertEqual(layout.parking_sections.count("northeast"), 13)
+        self.assertEqual(layout.parking_sections.count("southwest"), 12)
+        self.assertEqual(layout.parking_sections.count("southeast"), 10)
 
     def test_reserved_route_blocks_same_destination_until_release(self) -> None:
         layout = build_project_deck_layout(45)
@@ -68,7 +69,7 @@ class ProjectDeckLayoutTest(unittest.TestCase):
                 layout.parking_node(0),
                 layout.launch_nodes[0],
             ),
-            4.0,
+            12.0,
         )
 
 
@@ -79,41 +80,76 @@ class SpatialCarrierEnvironmentTest(unittest.TestCase):
 
         env.step({"high_level": 3, "aircraft_id": 0})
         self.assertEqual(env.event_queue[0].event_type, "taxi_to_launch_done")
-        self.assertEqual(env.event_queue[0].time, 2.0)
+        taxi_end = env.event_queue[0].time
+        self.assertGreater(taxi_end, 0.0)
         self.assertEqual(env.get_state()["deck"]["active_movements"], 1)
         self.assertIsNone(env.parking_occupancy[0])
 
-        env.step(None)
-        self.assertEqual(env.time, 2.0)
+        env._advance_time_to_next_event()
+        self.assertEqual(env.time, taxi_end)
         self.assertEqual(env.event_queue[0].event_type, "launch_done")
         self.assertEqual(env.get_state()["deck"]["active_movements"], 0)
+        self.assertEqual(env.get_state()["deck"]["free_launch_positions"], 2)
+
+        env._advance_time_to_next_event()
+        self.assertEqual(env.time, taxi_end + 1.0)
+        self.assertTrue(env.aircraft[0].is_airborne)
         self.assertEqual(env.get_state()["deck"]["free_launch_positions"], 3)
 
-        env.step(None)
-        self.assertEqual(env.time, 3.0)
-        self.assertTrue(env.aircraft[0].is_airborne)
-        self.assertEqual(env.get_state()["deck"]["free_launch_positions"], 4)
-
-    def test_recovery_route_blocks_conflicting_launch_paths(self) -> None:
+    def test_recovery_route_keeps_non_conflicting_launch_paths_available(self) -> None:
         env = CarrierAircraftSchedulingEnv()
         env.reset(seed=7)
         env.step({"high_level": 3, "aircraft_id": 0})
-        env.step(None)
-        env.step(None)
+        env._advance_time_to_next_event()
+        env._advance_time_to_next_event()
         env._start_wave(1)
 
         env.step({"high_level": 0, "aircraft_id": 0})
 
         self.assertEqual(env.get_state()["deck"]["active_movements"], 1)
-        self.assertEqual(env.get_high_level_action_mask()[3], 0)
+        self.assertEqual(env.get_high_level_action_mask()[3], 1)
         reserved_spot = env.aircraft[0].spot_id
         self.assertEqual(env.parking_occupancy[reserved_spot], 0)
 
-        env.step(None)
+        env._advance_time_to_next_event()
         self.assertFalse(env.aircraft[0].is_airborne)
         self.assertEqual(env.aircraft[0].parking_status, 2)
         self.assertEqual(env.get_state()["deck"]["active_movements"], 0)
         env.deck_occupancy.validate()
+
+    def test_compatible_service_vehicles_share_aircraft_parking_spot(self) -> None:
+        env = CarrierAircraftSchedulingEnv(
+            {
+                "fuel_time_mean": 30.0,
+                "fuel_time_std": 0.0,
+                "inspection_time_mean": 30.0,
+                "inspection_time_std": 0.0,
+                "ammo_extract_time_min": 0.1,
+                "ammo_extract_time_max": 0.1,
+                "lower_lift_time_mean": 0.1,
+                "lower_lift_time_std": 0.0,
+            }
+        )
+        env.reset(seed=7)
+        aircraft = env.aircraft[0]
+        aircraft.fuel_status = 0
+        aircraft.inspection_status = 0
+        aircraft.arm_status = 0
+        aircraft.arm_quantity_required = 1
+        aircraft.launch_status = 0
+
+        env.step({"high_level": 1, "aircraft_id": 0})
+        env.step({"high_level": 4, "aircraft_id": 0})
+        env.step({"high_level": 2, "aircraft_id": 0})
+        env._advance_time_to_next_event()
+
+        active_types = {
+            vehicle.service_type
+            for vehicle in env.service_vehicles
+            if vehicle.busy_aircraft_id == 0
+        }
+        self.assertEqual(active_types, {"fuel", "inspection", "arm"})
+        self.assertEqual(env.parking_occupancy[0], 0)
 
 
 if __name__ == "__main__":
