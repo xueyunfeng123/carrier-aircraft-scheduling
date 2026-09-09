@@ -47,6 +47,22 @@ class CPSATSolver:
         if not any(mask["high_level"]):
             return None
 
+        recovery_ids = (
+            self._candidate_ids(mask, ACTION_RECOVERY)
+            if mask["high_level"][ACTION_RECOVERY]
+            else []
+        )
+        if recovery_ids:
+            aircraft_id = min(
+                recovery_ids,
+                key=lambda item: (
+                    self._priority._launch_deadline(item),
+                    self.env._expected_recovery_duration(item),
+                    item,
+                ),
+            )
+            return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
+
         launch_ids = (
             self._candidate_ids(mask, ACTION_LAUNCH)
             if mask["high_level"][ACTION_LAUNCH]
@@ -67,22 +83,6 @@ class CPSATSolver:
                 ),
             )
             return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
-
-        recovery_ids = (
-            self._candidate_ids(mask, ACTION_RECOVERY)
-            if mask["high_level"][ACTION_RECOVERY]
-            else []
-        )
-        if recovery_ids:
-            aircraft_id = min(
-                recovery_ids,
-                key=lambda item: (
-                    self._priority._launch_deadline(item),
-                    self.env._expected_recovery_duration(item),
-                    item,
-                ),
-            )
-            return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
 
         service_actions = [
             (high_level, aircraft_id)

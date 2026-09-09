@@ -91,9 +91,21 @@ class PriorityRuleSolver:
         if high_level == ACTION_RECOVERY:
             return self.env._expected_recovery_duration(aircraft_id)
         if high_level == ACTION_FUEL:
-            return float(config["fuel_time_mean"])
+            return (
+                self.env._expected_service_vehicle_travel(
+                    "fuel",
+                    aircraft_id,
+                )
+                + float(config["fuel_time_mean"])
+            )
         if high_level == ACTION_INSPECTION:
-            return float(config["inspection_time_mean"])
+            return (
+                self.env._expected_service_vehicle_travel(
+                    "inspection",
+                    aircraft_id,
+                )
+                + float(config["inspection_time_mean"])
+            )
         if high_level == ACTION_LAUNCH:
             return self.env._expected_launch_duration(aircraft_id)
 
@@ -106,7 +118,10 @@ class PriorityRuleSolver:
             extract_mean
             + float(config["lower_lift_time_mean"])
             + float(config["upper_lift_time_mean"])
-            + self.env._spot_transfer_time(aircraft.spot_id)
+            + self.env._expected_service_vehicle_travel(
+                "arm",
+                aircraft_id,
+            )
             + aircraft.arm_quantity_required * float(config["arm_unit_time_mean"])
         )
 

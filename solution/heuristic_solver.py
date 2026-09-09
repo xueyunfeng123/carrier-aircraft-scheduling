@@ -34,21 +34,20 @@ class WaveHeuristicSolver:
         if not any(high_mask):
             return None
 
-        if high_mask[ACTION_LAUNCH]:
-            aircraft_id = self._choose_launch_aircraft(mask["low_level_by_high"][ACTION_LAUNCH])
-            return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
-
-        if high_mask[ACTION_INSPECTION]:
-            aircraft_id = min(
-                self._candidate_ids(
-                    mask["low_level_by_high"][ACTION_INSPECTION]
-                ),
-                key=self._inspection_priority,
+        if high_mask[ACTION_RECOVERY]:
+            aircraft_id = self._choose_recovery_aircraft(
+                mask["low_level_by_high"][ACTION_RECOVERY]
             )
             return {
-                "high_level": ACTION_INSPECTION,
+                "high_level": ACTION_RECOVERY,
                 "aircraft_id": aircraft_id,
             }
+
+        if high_mask[ACTION_LAUNCH]:
+            aircraft_id = self._choose_launch_aircraft(
+                mask["low_level_by_high"][ACTION_LAUNCH]
+            )
+            return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
 
         fuel_candidate = None
         arm_candidate = None
@@ -65,9 +64,17 @@ class WaveHeuristicSolver:
             high_level, aircraft_id = self._choose_service_action(fuel_candidate, arm_candidate)
             return {"high_level": high_level, "aircraft_id": aircraft_id}
 
-        if high_mask[ACTION_RECOVERY]:
-            aircraft_id = self._choose_recovery_aircraft(mask["low_level_by_high"][ACTION_RECOVERY])
-            return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
+        if high_mask[ACTION_INSPECTION]:
+            aircraft_id = min(
+                self._candidate_ids(
+                    mask["low_level_by_high"][ACTION_INSPECTION]
+                ),
+                key=self._inspection_priority,
+            )
+            return {
+                "high_level": ACTION_INSPECTION,
+                "aircraft_id": aircraft_id,
+            }
 
         return None
 
@@ -118,22 +125,16 @@ class WaveHeuristicSolver:
         aircraft = self.env.aircraft[aircraft_id]
         remaining = 0.0
         if aircraft.fuel_status == 0:
-            remaining = max(remaining, self._fuel_mean)
+            remaining = max(remaining, self._fuel_work_for(aircraft_id))
         if aircraft.inspection_status == 0:
             remaining = max(
                 remaining,
-                float(self.env.config["inspection_time_mean"]),
+                self._inspection_work_for(aircraft_id),
             )
         if aircraft.arm_status == 1:
             remaining = max(remaining, aircraft.arm_remaining)
         if aircraft.arm_status == 0:
-            remaining = max(
-                remaining,
-                self._expected_ammo_pipeline_time()
-                +
-                aircraft.arm_quantity_required * self._arm_unit_mean
-                + self.env._spot_transfer_time(aircraft.spot_id),
-            )
+            remaining = max(remaining, self._arm_work_for(aircraft_id))
         time_to_launch = self._time_until_launch_deadline(remaining)
         return time_to_launch - remaining
 
@@ -141,7 +142,7 @@ class WaveHeuristicSolver:
         self,
         aircraft_id: int,
     ) -> Tuple[int, float, float, int]:
-        remaining = float(self.env.config["inspection_time_mean"])
+        remaining = self._inspection_work_for(aircraft_id)
         time_to_deadline = self._time_until_launch_deadline(remaining)
         return (
             int(time_to_deadline - remaining < 0.0),
@@ -186,7 +187,10 @@ class WaveHeuristicSolver:
 
     def _fuel_priority(self, aircraft_id: int) -> Tuple[int, float, float, int, float, int, int]:
         aircraft = self.env.aircraft[aircraft_id]
-        remaining = max(self._fuel_work(aircraft), self._arm_work(aircraft))
+        remaining = max(
+            self._fuel_work_for(aircraft_id),
+            self._arm_work_for(aircraft_id),
+        )
         time_to_deadline = self._time_until_launch_deadline(remaining)
         slack = time_to_deadline - remaining
         return (
@@ -201,7 +205,10 @@ class WaveHeuristicSolver:
 
     def _arm_priority(self, aircraft_id: int) -> Tuple[int, float, float, int, float, int, int]:
         aircraft = self.env.aircraft[aircraft_id]
-        remaining = max(self._fuel_work(aircraft), self._arm_work(aircraft))
+        remaining = max(
+            self._fuel_work_for(aircraft_id),
+            self._arm_work_for(aircraft_id),
+        )
         time_to_deadline = self._time_until_launch_deadline(remaining)
         slack = time_to_deadline - remaining
         return (
@@ -225,8 +232,8 @@ class WaveHeuristicSolver:
         if fuel_slack + 3.0 < arm_slack:
             return ACTION_FUEL, fuel_candidate
 
-        fuel_work = self._fuel_work(self.env.aircraft[fuel_candidate])
-        arm_work = self._arm_work(self.env.aircraft[arm_candidate])
+        fuel_work = self._fuel_work_for(fuel_candidate)
+        arm_work = self._arm_work_for(arm_candidate)
         if arm_work > fuel_work * 1.25:
             return ACTION_ARM, arm_candidate
         return ACTION_FUEL, fuel_candidate
@@ -274,6 +281,24 @@ class WaveHeuristicSolver:
             return aircraft.fuel_remaining
         return 0.0
 
+    def _fuel_work_for(self, aircraft_id: int) -> float:
+        aircraft = self.env.aircraft[aircraft_id]
+        travel = (
+            self.env._expected_service_vehicle_travel("fuel", aircraft_id)
+            if aircraft.fuel_status == 0
+            else 0.0
+        )
+        return travel + self._fuel_work(aircraft)
+
+    def _inspection_work_for(self, aircraft_id: int) -> float:
+        return (
+            self.env._expected_service_vehicle_travel(
+                "inspection",
+                aircraft_id,
+            )
+            + float(self.env.config["inspection_time_mean"])
+        )
+
     def _arm_work(self, aircraft) -> float:
         if aircraft.arm_status == 0:
             return (
@@ -284,3 +309,13 @@ class WaveHeuristicSolver:
         if aircraft.arm_status == 1:
             return aircraft.arm_remaining
         return 0.0
+
+    def _arm_work_for(self, aircraft_id: int) -> float:
+        aircraft = self.env.aircraft[aircraft_id]
+        if aircraft.arm_status != 0:
+            return self._arm_work(aircraft)
+        return (
+            self._expected_ammo_pipeline_time()
+            + aircraft.arm_quantity_required * self._arm_unit_mean
+            + self.env._expected_service_vehicle_travel("arm", aircraft_id)
+        )

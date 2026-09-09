@@ -382,9 +382,10 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - Inspection is a fifth high-level action. RL uses 21 aircraft features,
   20 global features, and observation schema version 4.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 33 unit tests pass. A three-wave, 60-minute, seed-10007 smoke run
-  completed without deadlock: Random/FIFO/SPT/EDD/Heuristic/Sampled/CP-SAT
-  completed 52/52/48/58/50/55/50 launches.
+- All 33 unit tests pass. In the fixed seed-10007, 60-minute, 12-wave run,
+  Random/FIFO/SPT/EDD/Heuristic/Sampled/CP-SAT complete
+  148/139/146/141/147/148/146 launches. The result is stored in
+  `outputs/haitian_mobile_services_60min_seed10007.csv`.
 - Detailed assumptions and remaining work are in
   `doc/haitian_deck_environment_spec.md`.
 - Fixed `seed=10007`, 60-minute, 12-wave results with the graph enabled are:

@@ -1223,6 +1223,37 @@ class CarrierAircraftSchedulingEnv:
         )
         return vehicle, duration
 
+    def _expected_service_vehicle_travel(
+        self,
+        service_type: str,
+        aircraft_id: int,
+    ) -> float:
+        available = [
+            vehicle
+            for vehicle in self.service_vehicles
+            if vehicle.service_type == service_type
+            and vehicle.busy_aircraft_id is None
+        ]
+        if not available:
+            available = [
+                vehicle
+                for vehicle in self.service_vehicles
+                if vehicle.service_type == service_type
+            ]
+        aircraft = self.aircraft[aircraft_id]
+        if aircraft.spot_id < 0:
+            return float("inf")
+        if self.deck_layout is None:
+            return self._spot_transfer_time(aircraft.spot_id)
+        target = self.deck_layout.parking_node(aircraft.spot_id)
+        return min(
+            self.deck_layout.graph.shortest_distance(
+                vehicle.node_id,
+                target,
+            )
+            for vehicle in available
+        )
+
     def _release_service_vehicle(
         self,
         service_type: str,
