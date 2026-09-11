@@ -86,7 +86,11 @@ class PolicyNetworkTest(unittest.TestCase):
         env.step({"high_level": 3, "aircraft_id": 0})
         moving = encode_observation(env)
 
-        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 4)
+        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 5)
+        self.assertEqual(
+            len(initial.aircraft[0]),
+            AIRCRAFT_FEATURE_DIM,
+        )
         self.assertEqual(len(initial.global_features), GLOBAL_FEATURE_DIM)
         self.assertEqual(initial.global_features[15], 1.0)
         self.assertLess(moving.global_features[15], 1.0)

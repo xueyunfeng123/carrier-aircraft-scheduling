@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 
@@ -25,10 +25,12 @@ class WaveHeuristicSolver:
 
     def __init__(self, env: CarrierAircraftSchedulingEnv):
         self.env = env
-        self._fuel_mean = float(env.config["fuel_time_mean"])
+        self._fuel_mean = (
+            1.0 - float(env.config["post_sortie_fuel_level"])
+        ) / float(env.config["fuel_rate_per_minute"])
         self._arm_unit_mean = float(env.config["arm_unit_time_mean"])
 
-    def choose_action(self) -> Optional[Dict[str, int]]:
+    def choose_action(self) -> Optional[Dict[str, Any]]:
         mask = self.env.get_action_mask()
         high_mask = mask["high_level"]
         if not any(high_mask):
@@ -38,16 +40,20 @@ class WaveHeuristicSolver:
             aircraft_id = self._choose_recovery_aircraft(
                 mask["low_level_by_high"][ACTION_RECOVERY]
             )
-            return {
-                "high_level": ACTION_RECOVERY,
-                "aircraft_id": aircraft_id,
-            }
+            return self.env.complete_action(
+                {
+                    "high_level": ACTION_RECOVERY,
+                    "aircraft_id": aircraft_id,
+                }
+            )
 
         if high_mask[ACTION_LAUNCH]:
             aircraft_id = self._choose_launch_aircraft(
                 mask["low_level_by_high"][ACTION_LAUNCH]
             )
-            return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
+            return self.env.complete_action(
+                {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
+            )
 
         fuel_candidate = None
         arm_candidate = None
@@ -58,11 +64,23 @@ class WaveHeuristicSolver:
 
         if fuel_candidate is not None or arm_candidate is not None:
             if fuel_candidate is None:
-                return {"high_level": ACTION_ARM, "aircraft_id": arm_candidate}
+                return self.env.complete_action(
+                    {
+                        "high_level": ACTION_ARM,
+                        "aircraft_id": arm_candidate,
+                    }
+                )
             if arm_candidate is None:
-                return {"high_level": ACTION_FUEL, "aircraft_id": fuel_candidate}
+                return self.env.complete_action(
+                    {
+                        "high_level": ACTION_FUEL,
+                        "aircraft_id": fuel_candidate,
+                    }
+                )
             high_level, aircraft_id = self._choose_service_action(fuel_candidate, arm_candidate)
-            return {"high_level": high_level, "aircraft_id": aircraft_id}
+            return self.env.complete_action(
+                {"high_level": high_level, "aircraft_id": aircraft_id}
+            )
 
         if high_mask[ACTION_INSPECTION]:
             aircraft_id = min(
@@ -71,10 +89,12 @@ class WaveHeuristicSolver:
                 ),
                 key=self._inspection_priority,
             )
-            return {
-                "high_level": ACTION_INSPECTION,
-                "aircraft_id": aircraft_id,
-            }
+            return self.env.complete_action(
+                {
+                    "high_level": ACTION_INSPECTION,
+                    "aircraft_id": aircraft_id,
+                }
+            )
 
         return None
 
@@ -271,12 +291,16 @@ class WaveHeuristicSolver:
             int(value) * float(prob)
             for value, prob in zip(quantity_values, quantity_probs)
         ) / total_prob
-        expected_spot = sum(self.env.parking_transfer_times) / len(self.env.parking_transfer_times)
-        return self._expected_ammo_pipeline_time() + expected_quantity * self._arm_unit_mean + expected_spot
+        return (
+            self._expected_ammo_pipeline_time()
+            + expected_quantity * self._arm_unit_mean
+        )
 
     def _fuel_work(self, aircraft) -> float:
         if aircraft.fuel_status == 0:
-            return self._fuel_mean
+            return (
+                1.0 - aircraft.fuel_level
+            ) / float(self.env.config["fuel_rate_per_minute"])
         if aircraft.fuel_status == 1:
             return aircraft.fuel_remaining
         return 0.0

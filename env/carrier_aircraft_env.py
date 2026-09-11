@@ -22,6 +22,7 @@ from env.project_deck_graph import (
     build_project_deck_layout,
 )
 from env.scenario import PROJECT_CORE_PROFILE, build_project_core_profile
+from env.traffic_planner import SpaceTimeTrafficPlanner, TimedRoute
 
 
 @dataclass(order=True)
@@ -49,6 +50,7 @@ class AircraftRecord:
     last_missed_wave: Optional[int] = None
     recovery_status: int = 0
     fuel_status: int = 0
+    fuel_level: float = 1.0
     inspection_status: int = 0
     arm_status: int = 0
     arm_stage: int = 0
@@ -73,6 +75,7 @@ class AircraftRecord:
     ammo_extract_start: Optional[float] = None
     ammo_to_assembly_end: Optional[float] = None
     deck_arm_start: Optional[float] = None
+    arm_vehicle_ready_time: Optional[float] = None
     arm_end: Optional[float] = None
     launch_ready: Optional[float] = None
     launch_start: Optional[float] = None
@@ -93,6 +96,7 @@ class AircraftRecord:
             self.missed_sorties,
             self.recovery_status,
             self.fuel_status,
+            self.fuel_level,
             self.inspection_status,
             self.arm_status,
             self.arm_stage,
@@ -114,6 +118,21 @@ class ServiceVehicleRecord:
     service_type: str
     node_id: str
     busy_aircraft_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class TractorApproach:
+    tractor_id: str
+    start_time: float
+    route: TimedRoute
+
+
+@dataclass(frozen=True)
+class TowPlan:
+    tractor_id: str
+    approach_start: float
+    approach: TimedRoute
+    towing: TimedRoute
 
 
 class CarrierAircraftSchedulingEnv:
@@ -174,10 +193,43 @@ class CarrierAircraftSchedulingEnv:
         self.missed_sortie_records: List[Dict[str, Any]] = []
         self.parking_transfer_times = self._build_parking_transfer_times()
         self.parking_occupancy: List[Optional[int]] = [None] * self.num_parking_spots
+        self.parking_release_times = [float("-inf")] * self.num_parking_spots
+        self.runway_release_times = [float("-inf")] * int(
+            self.config["num_launch_positions"]
+        )
         self.deck_occupancy: Optional[DeckOccupancy] = None
+        self.traffic_planner: Optional[SpaceTimeTrafficPlanner] = None
         self.active_deck_routes: Dict[int, DeckRouteReservation] = {}
         if self.deck_layout is not None:
             self.deck_occupancy = DeckOccupancy(self.deck_layout.graph)
+            self.traffic_planner = SpaceTimeTrafficPlanner(
+                self.deck_layout.graph,
+                time_step=float(self.config["traffic_time_step"]),
+                max_planning_horizon=float(
+                    self.config["traffic_planning_horizon"]
+                ),
+            )
+        self._candidate_cache: Optional[Dict[str, List[int]]] = None
+        self._launch_route_cache: Dict[
+            Tuple[int, Optional[int]],
+            Optional[Tuple[str, Tuple[str, ...], float]],
+        ] = {}
+        self._recovery_route_cache: Dict[
+            Tuple[int, Optional[int]],
+            Optional[Tuple[str, Tuple[str, ...], float]],
+        ] = {}
+        self._tow_preview_cache: Dict[
+            Tuple[int, str, str, float],
+            Optional[TowPlan],
+        ] = {}
+        self._tractor_approach_cache: Dict[
+            Tuple[str, float],
+            Optional[TractorApproach],
+        ] = {}
+        self._service_route_cache: Dict[
+            Tuple[str, int],
+            Optional[TimedRoute],
+        ] = {}
         self.aircraft: List[AircraftRecord] = []
         for aircraft_id in range(self.num_aircraft):
             spot_id = aircraft_id
@@ -200,6 +252,7 @@ class CarrierAircraftSchedulingEnv:
                     pending_recovery=False,
                     recovery_status=2,
                     fuel_status=2,
+                    fuel_level=float(self.config["initial_fuel_level"]),
                     inspection_status=2,
                     arm_status=2,
                     launch_status=1,
@@ -221,6 +274,7 @@ class CarrierAircraftSchedulingEnv:
         self.free_personnel = int(self.config["num_personnel"])
         self.service_vehicles = self._build_service_vehicle_fleet()
         self.active_service_vehicles: Dict[Tuple[str, int], str] = {}
+        self.active_tow_vehicles: Dict[int, str] = {}
 
         self.total_reward = 0.0
         self.done = False
@@ -266,8 +320,13 @@ class CarrierAircraftSchedulingEnv:
             info = self._make_info(invalid_action=True, message="invalid_action_format")
             return self.get_state(), reward, self.done, info
 
-        high_level, aircraft_id = parsed
-        if not self._is_action_valid(high_level, aircraft_id):
+        high_level, aircraft_id, target_id, vehicle_id = parsed
+        if not self._is_action_valid(
+            high_level,
+            aircraft_id,
+            target_id,
+            vehicle_id,
+        ):
             reward = -float(self.config["invalid_action_penalty"])
             self.total_reward += reward
             info = self._make_info(invalid_action=True, message="illegal_action")
@@ -275,16 +334,17 @@ class CarrierAircraftSchedulingEnv:
 
         action_name = HIGH_LEVEL_ACTIONS[high_level]
         if action_name == "R":
-            self._start_recovery(aircraft_id)
+            self._start_recovery(aircraft_id, target_id)
         elif action_name == "F":
-            self._start_fueling(aircraft_id)
+            self._start_fueling(aircraft_id, vehicle_id)
         elif action_name == "M":
-            self._start_arming(aircraft_id)
+            self._start_arming(aircraft_id, vehicle_id)
         elif action_name == "L":
-            self._start_launch(aircraft_id)
+            self._start_launch(aircraft_id, target_id)
         elif action_name == "I":
-            self._start_inspection(aircraft_id)
+            self._start_inspection(aircraft_id, vehicle_id)
 
+        self._invalidate_planning_cache()
         info = self._make_info(action_started=action_name)
         return self.get_state(), 0.0, self.done, info
 
@@ -350,6 +410,84 @@ class CarrierAircraftSchedulingEnv:
             result["low_level"] = self.get_low_level_action_mask(high_level_action)
         return result
 
+    def get_target_candidates(
+        self,
+        high_level: int,
+        aircraft_id: int,
+    ) -> List[Any]:
+        action_name = HIGH_LEVEL_ACTIONS.get(high_level)
+        if action_name == "R":
+            options = [
+                (route[2], spot_id)
+                for spot_id, occupied_by in enumerate(self.parking_occupancy)
+                if occupied_by is None
+                and self._landing_target_available(spot_id)
+                and (
+                    route := self._find_recovery_route(
+                        aircraft_id,
+                        spot_id,
+                    )
+                )
+                is not None
+            ]
+            return [spot_id for _, spot_id in sorted(options)]
+        if action_name == "L":
+            if self.deck_layout is None:
+                return [0]
+            options = [
+                (route[2], runway_id)
+                for runway_id in range(len(self.deck_layout.launch_nodes))
+                if self._launch_runway_available(runway_id, aircraft_id)
+                and (
+                    route := self._find_launch_route(
+                        aircraft_id,
+                        runway_id,
+                    )
+                )
+                is not None
+            ]
+            return [runway_id for _, runway_id in sorted(options)]
+        service_type = {
+            "F": "fuel",
+            "M": "arm",
+            "I": "inspection",
+        }.get(action_name)
+        if service_type is None:
+            return []
+        options = [
+            (route.end_time, vehicle.vehicle_id)
+            for vehicle in self.service_vehicles
+            if vehicle.service_type == service_type
+            and vehicle.busy_aircraft_id is None
+            and (
+                route := self._preview_service_vehicle_route(
+                    vehicle,
+                    aircraft_id,
+                )
+            )
+            is not None
+        ]
+        return [vehicle_id for _, vehicle_id in sorted(options)]
+
+    def complete_action(
+        self,
+        action: Dict[str, Any],
+        rng: Optional[random.Random] = None,
+    ) -> Dict[str, Any]:
+        completed = dict(action)
+        high_level = int(completed["high_level"])
+        aircraft_id = int(completed["aircraft_id"])
+        candidates = self.get_target_candidates(high_level, aircraft_id)
+        if not candidates:
+            return completed
+        selected = rng.choice(candidates) if rng is not None else candidates[0]
+        action_name = HIGH_LEVEL_ACTIONS[high_level]
+        if action_name in ("R", "L"):
+            completed["target_id"] = int(selected)
+        elif action_name in ("F", "M", "I"):
+            completed["vehicle_id"] = str(selected)
+        return completed
+
     def get_high_level_action_mask(self) -> List[int]:
         candidates = self._candidate_sets()
         return [
@@ -357,20 +495,26 @@ class CarrierAircraftSchedulingEnv:
             int(
                 len(candidates["F"]) > 0
                 and self.free_fuel_servers > 0
-                and self.free_personnel >= int(self.config["fuel_personnel_required"])
+                and self._personnel_available(
+                    int(self.config["fuel_personnel_required"])
+                )
             ),
             int(
                 len(candidates["M"]) > 0
+                and self.free_arm_vehicles > 0
                 and self.free_ammo_transport_vehicles > 0
                 and self.free_lower_weapon_lifts > 0
-                and self.free_personnel >= int(self.config["arm_personnel_required"])
+                and self._personnel_available(
+                    int(self.config["arm_personnel_required"])
+                )
             ),
             int(len(candidates["L"]) > 0 and self.free_launch_channels > 0),
             int(
                 len(candidates["I"]) > 0
                 and self.free_inspection_vehicles > 0
-                and self.free_personnel
-                >= int(self.config["inspection_personnel_required"])
+                and self._personnel_available(
+                    int(self.config["inspection_personnel_required"])
+                )
             ),
         ]
 
@@ -491,7 +635,10 @@ class CarrierAircraftSchedulingEnv:
         delta = next_time - self.time
         self._update_waiting_and_remaining(delta)
         self.time = next_time
+        if self.traffic_planner is not None:
+            self.traffic_planner.prune(self.time)
         completed = self._process_events_at_current_time()
+        self._invalidate_planning_cache()
 
         reward = self._calculate_time_reward(delta, completed)
         if self.time >= self.simulation_duration:
@@ -525,6 +672,10 @@ class CarrierAircraftSchedulingEnv:
                         event.aircraft_id,
                         clear_operation=True,
                     )
+                    self._release_tow_vehicle(
+                        event.aircraft_id,
+                        reservation.target,
+                    )
                     aircraft.spot_id = self._route_target_spot(reservation)
                     aircraft.taxi_end = self.time
                     aircraft.parking_status = 2
@@ -556,11 +707,14 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.park_end = self.time
             elif event.event_type == "fuel_done":
                 aircraft.fuel_status = 2
+                aircraft.fuel_level = 1.0
                 aircraft.fuel_remaining = 0.0
                 aircraft.fuel_end = self.time
                 self.free_fuel_servers += 1
                 self._release_service_vehicle("fuel", event.aircraft_id)
-                self.free_personnel += int(self.config["fuel_personnel_required"])
+                self._release_personnel(
+                    int(self.config["fuel_personnel_required"])
+                )
                 completed["fuel"] += 1
             elif event.event_type == "inspection_done":
                 aircraft.inspection_status = 2
@@ -568,8 +722,8 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.inspection_end = self.time
                 self.free_inspection_vehicles += 1
                 self._release_service_vehicle("inspection", event.aircraft_id)
-                self.free_personnel += int(
-                    self.config["inspection_personnel_required"]
+                self._release_personnel(
+                    int(self.config["inspection_personnel_required"])
                 )
                 completed["inspection"] += 1
             elif event.event_type == "arm_done":
@@ -580,7 +734,9 @@ class CarrierAircraftSchedulingEnv:
                 self.free_arm_vehicles += 1
                 self._release_service_vehicle("arm", event.aircraft_id)
                 self.free_upper_weapon_lifts += 1
-                self.free_personnel += int(self.config["arm_personnel_required"])
+                self._release_personnel(
+                    int(self.config["arm_personnel_required"])
+                )
                 completed["arm"] += 1
             elif event.event_type == "ammo_to_assembly_done":
                 aircraft.arm_stage = 2
@@ -589,6 +745,10 @@ class CarrierAircraftSchedulingEnv:
                 self.free_lower_weapon_lifts += 1
             elif event.event_type == "taxi_to_launch_done":
                 reservation = self._complete_deck_route(event.aircraft_id)
+                self._release_tow_vehicle(
+                    event.aircraft_id,
+                    reservation.target,
+                )
                 aircraft.taxi_end = self.time
                 aircraft.launch_start = self.time
                 self._log_event(
@@ -621,6 +781,9 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.spot_id = -1
                 aircraft.recovery_status = 0
                 aircraft.fuel_status = 0
+                aircraft.fuel_level = float(
+                    self.config["post_sortie_fuel_level"]
+                )
                 aircraft.inspection_status = 0
                 aircraft.arm_status = 0
                 aircraft.arm_stage = 0
@@ -645,11 +808,18 @@ class CarrierAircraftSchedulingEnv:
             self.deck_occupancy.validate()
         return completed
 
-    def _start_recovery(self, aircraft_id: int) -> None:
+    def _start_recovery(
+        self,
+        aircraft_id: int,
+        target_spot_id: Optional[int] = None,
+    ) -> None:
         aircraft = self.aircraft[aircraft_id]
         movement_duration = 0.0
         if self.spatial_graph_enabled:
-            reservation = self._reserve_recovery_route(aircraft_id)
+            reservation = self._reserve_recovery_route(
+                aircraft_id,
+                target_spot_id,
+            )
             self.active_deck_routes[aircraft_id] = reservation
             aircraft.spot_id = self._route_target_spot(reservation)
             aircraft.parking_status = 1
@@ -674,18 +844,29 @@ class CarrierAircraftSchedulingEnv:
             aircraft_id,
         )
 
-    def _start_fueling(self, aircraft_id: int) -> None:
+    def _start_fueling(
+        self,
+        aircraft_id: int,
+        vehicle_id: Optional[str] = None,
+    ) -> None:
         aircraft = self.aircraft[aircraft_id]
-        duration = self._sample_duration("fuel_time_mean", "fuel_time_std")
+        rate = float(self.config["fuel_rate_per_minute"])
+        if rate <= 0:
+            raise ValueError("fuel_rate_per_minute must be positive")
+        duration = max(
+            float(self.config["min_process_time"]),
+            (1.0 - aircraft.fuel_level) / rate,
+        )
         vehicle, travel_duration = self._dispatch_service_vehicle(
             "fuel",
             aircraft_id,
+            vehicle_id,
         )
         aircraft.fuel_status = 1
         aircraft.fuel_start = self.time
         aircraft.fuel_remaining = travel_duration + duration
         self.free_fuel_servers -= 1
-        self.free_personnel -= int(self.config["fuel_personnel_required"])
+        self._acquire_personnel(int(self.config["fuel_personnel_required"]))
         self._log_event(
             "fuel_start",
             aircraft_id,
@@ -699,7 +880,11 @@ class CarrierAircraftSchedulingEnv:
             aircraft_id,
         )
 
-    def _start_inspection(self, aircraft_id: int) -> None:
+    def _start_inspection(
+        self,
+        aircraft_id: int,
+        vehicle_id: Optional[str] = None,
+    ) -> None:
         aircraft = self.aircraft[aircraft_id]
         duration = self._sample_duration(
             "inspection_time_mean",
@@ -708,13 +893,14 @@ class CarrierAircraftSchedulingEnv:
         vehicle, travel_duration = self._dispatch_service_vehicle(
             "inspection",
             aircraft_id,
+            vehicle_id,
         )
         aircraft.inspection_status = 1
         aircraft.inspection_start = self.time
         aircraft.inspection_remaining = travel_duration + duration
         self.free_inspection_vehicles -= 1
-        self.free_personnel -= int(
-            self.config["inspection_personnel_required"]
+        self._acquire_personnel(
+            int(self.config["inspection_personnel_required"])
         )
         self._log_event(
             "inspection_start",
@@ -729,7 +915,11 @@ class CarrierAircraftSchedulingEnv:
             aircraft_id,
         )
 
-    def _start_arming(self, aircraft_id: int) -> None:
+    def _start_arming(
+        self,
+        aircraft_id: int,
+        vehicle_id: Optional[str] = None,
+    ) -> None:
         aircraft = self.aircraft[aircraft_id]
         first_stage_duration = self._sample_ammo_extract_time() + self._sample_duration(
             "lower_lift_time_mean",
@@ -737,30 +927,48 @@ class CarrierAircraftSchedulingEnv:
         )
         deck_stage_duration = (
             self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
-            + self._spot_transfer_time(aircraft.spot_id)
             + self._sample_arming_duration(aircraft.arm_quantity_required)
         )
         aircraft.arm_status = 1
         aircraft.arm_stage = 1
         aircraft.arm_start = self.time
         aircraft.ammo_extract_start = self.time
-        aircraft.arm_remaining = first_stage_duration + deck_stage_duration
+        vehicle, vehicle_travel_duration = self._dispatch_service_vehicle(
+            "arm",
+            aircraft_id,
+            vehicle_id,
+        )
+        aircraft.arm_vehicle_ready_time = self.time + vehicle_travel_duration
+        aircraft.arm_remaining = (
+            max(first_stage_duration, vehicle_travel_duration)
+            + deck_stage_duration
+        )
+        self.free_arm_vehicles -= 1
         self.free_ammo_transport_vehicles -= 1
         self.free_lower_weapon_lifts -= 1
-        self.free_personnel -= int(self.config["arm_personnel_required"])
+        self._acquire_personnel(int(self.config["arm_personnel_required"]))
         self._log_event(
             "arm_start",
             aircraft_id,
             first_stage_duration=first_stage_duration,
             deck_stage_duration=deck_stage_duration,
+            vehicle_id=vehicle.vehicle_id,
+            vehicle_travel_duration=vehicle_travel_duration,
         )
         self._push_event(self.time + first_stage_duration, "ammo_to_assembly_done", aircraft_id)
 
-    def _start_launch(self, aircraft_id: int) -> None:
+    def _start_launch(
+        self,
+        aircraft_id: int,
+        runway_id: Optional[int] = None,
+    ) -> None:
         aircraft = self.aircraft[aircraft_id]
         movement_duration = 0.0
         if self.spatial_graph_enabled:
-            reservation = self._reserve_launch_route(aircraft_id)
+            reservation = self._reserve_launch_route(
+                aircraft_id,
+                runway_id,
+            )
             self.active_deck_routes[aircraft_id] = reservation
             movement_duration = self._route_duration(reservation)
             aircraft.taxi_start = self.time
@@ -802,37 +1010,42 @@ class CarrierAircraftSchedulingEnv:
             if (
                 aircraft.arm_status == 1
                 and aircraft.arm_stage == 2
-                and self.free_arm_vehicles > 0
                 and self.free_upper_weapon_lifts > 0
             ):
                 self._start_deck_arming(aircraft_id)
 
     def _start_deck_arming(self, aircraft_id: int) -> None:
         aircraft = self.aircraft[aircraft_id]
-        vehicle, vehicle_travel_duration = self._dispatch_service_vehicle(
-            "arm",
-            aircraft_id,
+        vehicle_id = self.active_service_vehicles[("arm", aircraft_id)]
+        vehicle = next(
+            item for item in self.service_vehicles
+            if item.vehicle_id == vehicle_id
+        )
+        vehicle_wait = max(
+            0.0,
+            (aircraft.arm_vehicle_ready_time or self.time) - self.time,
         )
         duration = (
             self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
-            + vehicle_travel_duration
+            + vehicle_wait
             + self._sample_arming_duration(aircraft.arm_quantity_required)
         )
         aircraft.arm_stage = 3
         aircraft.deck_arm_start = self.time
         aircraft.arm_remaining = duration
-        self.free_arm_vehicles -= 1
         self.free_upper_weapon_lifts -= 1
         self._log_event(
             "deck_arm_start",
             aircraft_id,
             duration=duration,
             vehicle_id=vehicle.vehicle_id,
-            travel_duration=vehicle_travel_duration,
+            travel_duration=vehicle_wait,
         )
         self._push_event(self.time + duration, "arm_done", aircraft_id)
 
     def _candidate_sets(self) -> Dict[str, List[int]]:
+        if self._candidate_cache is not None:
+            return self._candidate_cache
         candidates = {"R": [], "F": [], "M": [], "L": [], "I": []}
         launch_capacity_available = (
             self.wave_records[-1]["launches_started"] < self.group_size
@@ -901,6 +1114,7 @@ class CarrierAircraftSchedulingEnv:
                 )
             ):
                 candidates["L"].append(aircraft_id)
+        self._candidate_cache = candidates
         return candidates
 
     def _schedule_wave_events(self) -> None:
@@ -911,6 +1125,7 @@ class CarrierAircraftSchedulingEnv:
         self._push_event(self.simulation_duration, "simulation_end", -1)
 
     def _start_wave(self, wave_index: int) -> None:
+        self._invalidate_planning_cache()
         if wave_index > self.current_wave_index:
             self._record_missed_sorties(self.current_wave_index)
 
@@ -993,73 +1208,192 @@ class CarrierAircraftSchedulingEnv:
     def _find_launch_route(
         self,
         aircraft_id: int,
+        runway_id: Optional[int] = None,
     ) -> Optional[Tuple[str, Tuple[str, ...], float]]:
-        if self.deck_layout is None or self.deck_occupancy is None:
+        cache_key = (aircraft_id, runway_id)
+        if cache_key in self._launch_route_cache:
+            return self._launch_route_cache[cache_key]
+        if (
+            self.deck_layout is None
+            or self.deck_occupancy is None
+            or self.traffic_planner is None
+            or not self._available_tow_vehicles()
+        ):
+            self._launch_route_cache[cache_key] = None
             return None
         aircraft = self.aircraft[aircraft_id]
         if aircraft.spot_id < 0:
+            self._launch_route_cache[cache_key] = None
             return None
         source = self.deck_layout.parking_node(aircraft.spot_id)
-        return self.deck_occupancy.find_route(
-            aircraft_id,
-            source,
-            self.deck_layout.launch_nodes,
+        runway_ids = (
+            (runway_id,)
+            if runway_id is not None
+            else tuple(range(len(self.deck_layout.launch_nodes)))
         )
+        routes = []
+        for candidate_id in runway_ids:
+            if not self._launch_runway_available(candidate_id, aircraft_id):
+                continue
+            target = self.deck_layout.launch_nodes[candidate_id]
+            if self.deck_occupancy.occupants[target]:
+                continue
+            tow_plan = self._preview_tow_vehicle(
+                aircraft_id,
+                source,
+                target,
+                self.time,
+            )
+            if tow_plan is not None:
+                routes.append(
+                    (
+                        tow_plan.towing.end_time,
+                        target,
+                        tow_plan.towing.nodes,
+                        tow_plan.towing.end_time - self.time,
+                    )
+                )
+        if not routes:
+            self._launch_route_cache[cache_key] = None
+            return None
+        _, target, path, duration = min(routes)
+        result = (target, path, duration)
+        self._launch_route_cache[cache_key] = result
+        return result
 
     def _find_recovery_route(
         self,
         aircraft_id: int,
+        target_spot_id: Optional[int] = None,
     ) -> Optional[Tuple[str, Tuple[str, ...], float]]:
-        if self.deck_layout is None or self.deck_occupancy is None:
+        cache_key = (aircraft_id, target_spot_id)
+        if cache_key in self._recovery_route_cache:
+            return self._recovery_route_cache[cache_key]
+        if (
+            self.deck_layout is None
+            or self.deck_occupancy is None
+            or self.traffic_planner is None
+            or not self._available_tow_vehicles()
+        ):
+            self._recovery_route_cache[cache_key] = None
             return None
-        free_parking_nodes = [
-            self.deck_layout.parking_node(spot_id)
+        free_spot_ids = [
+            spot_id
             for spot_id, occupied_by in enumerate(self.parking_occupancy)
             if occupied_by is None
+            and self._landing_target_available(spot_id)
         ]
-        return self.deck_occupancy.find_route(
-            aircraft_id,
-            self.deck_layout.recovery_node,
-            free_parking_nodes,
-        )
+        if target_spot_id is not None:
+            free_spot_ids = [
+                spot_id for spot_id in free_spot_ids
+                if spot_id == target_spot_id
+            ]
+        else:
+            recovery_node = self.deck_layout.recovery_node
+            free_spot_ids.sort(
+                key=lambda spot_id: (
+                    self.deck_layout.graph.shortest_distance(
+                        recovery_node,
+                        self.deck_layout.parking_node(spot_id),
+                    ),
+                    spot_id,
+                )
+            )
+        routes = []
+        start_time = self.time + float(self.config["recovery_time"])
+        for spot_id in free_spot_ids:
+            target = self.deck_layout.parking_node(spot_id)
+            tow_plan = self._preview_tow_vehicle(
+                aircraft_id,
+                self.deck_layout.recovery_node,
+                target,
+                start_time,
+            )
+            if tow_plan is not None:
+                routes.append(
+                    (
+                        tow_plan.towing.end_time,
+                        target,
+                        tow_plan.towing.nodes,
+                        tow_plan.towing.end_time - start_time,
+                    )
+                )
+                if target_spot_id is None:
+                    break
+        if not routes:
+            self._recovery_route_cache[cache_key] = None
+            return None
+        _, target, path, duration = min(routes)
+        result = (target, path, duration)
+        self._recovery_route_cache[cache_key] = result
+        return result
 
-    def _reserve_launch_route(self, aircraft_id: int) -> DeckRouteReservation:
-        if self.deck_layout is None or self.deck_occupancy is None:
+    def _reserve_launch_route(
+        self,
+        aircraft_id: int,
+        runway_id: Optional[int] = None,
+    ) -> DeckRouteReservation:
+        if (
+            self.deck_layout is None
+            or self.deck_occupancy is None
+            or self.traffic_planner is None
+        ):
             raise RuntimeError("spatial graph is not initialized")
-        route = self._find_launch_route(aircraft_id)
+        route = self._find_launch_route(aircraft_id, runway_id)
         if route is None:
             raise RuntimeError("no available launch route")
-        target, path, distance = route
+        target, _, _ = route
         source = self.deck_layout.parking_node(
             self.aircraft[aircraft_id].spot_id
+        )
+        _, timed_route = self._dispatch_tow_vehicle(
+            aircraft_id,
+            source,
+            target,
+            self.time,
         )
         return self.deck_occupancy.reserve_route(
             aircraft_id,
             "launch_taxi",
             source,
             target,
-            path,
-            distance,
+            timed_route.nodes,
+            timed_route.end_time - self.time,
             release_source=True,
         )
 
-    def _reserve_recovery_route(self, aircraft_id: int) -> DeckRouteReservation:
-        if self.deck_layout is None or self.deck_occupancy is None:
+    def _reserve_recovery_route(
+        self,
+        aircraft_id: int,
+        target_spot_id: Optional[int] = None,
+    ) -> DeckRouteReservation:
+        if (
+            self.deck_layout is None
+            or self.deck_occupancy is None
+            or self.traffic_planner is None
+        ):
             raise RuntimeError("spatial graph is not initialized")
-        route = self._find_recovery_route(aircraft_id)
+        route = self._find_recovery_route(aircraft_id, target_spot_id)
         if route is None:
             raise RuntimeError("no available recovery route")
-        target, path, distance = route
+        target, _, _ = route
         spot_id = self.deck_layout.parking_spot(target)
         if self.parking_occupancy[spot_id] is not None:
             raise RuntimeError("recovery parking destination became unavailable")
+        tow_start = self.time + float(self.config["recovery_time"])
+        _, timed_route = self._dispatch_tow_vehicle(
+            aircraft_id,
+            self.deck_layout.recovery_node,
+            target,
+            tow_start,
+        )
         reservation = self.deck_occupancy.reserve_route(
             aircraft_id,
             "recovery_taxi",
             self.deck_layout.recovery_node,
             target,
-            path,
-            distance,
+            timed_route.nodes,
+            timed_route.end_time - tow_start,
             release_source=False,
         )
         self.parking_occupancy[spot_id] = aircraft_id
@@ -1084,6 +1418,8 @@ class CarrierAircraftSchedulingEnv:
         if self.deck_occupancy is None:
             raise RuntimeError("spatial graph is not initialized")
         reservation = self.active_deck_routes.pop(aircraft_id)
+        runway_id = self.deck_layout.launch_nodes.index(reservation.target)
+        self.runway_release_times[runway_id] = self.time
         self.deck_occupancy.release_target(aircraft_id, reservation.target)
         self.deck_occupancy.validate()
 
@@ -1129,11 +1465,24 @@ class CarrierAircraftSchedulingEnv:
                     self.config.get("num_launch_positions", 1)
                 ),
             }
+        reserved_pathways = set()
+        if self.traffic_planner is not None:
+            pathway_nodes = set(self.deck_layout.pathway_nodes)
+            reserved_pathways = {
+                node_id
+                for (node_id, tick), _ in (
+                    self.traffic_planner.node_reservations.items()
+                )
+                if node_id in pathway_nodes
+                and tick * self.traffic_planner.time_step >= self.time
+            }
         return {
             "enabled": True,
             "active_movements": len(self.deck_occupancy.active_routes),
-            "free_pathway_fraction": self.deck_occupancy.free_fraction(
-                "pathway"
+            "free_pathway_fraction": (
+                1.0
+                - len(reserved_pathways)
+                / max(1, len(self.deck_layout.pathway_nodes))
             ),
             "free_launch_positions": sum(
                 not self.deck_occupancy.occupants[node_id]
@@ -1162,6 +1511,7 @@ class CarrierAircraftSchedulingEnv:
             ("fuel", int(self.config["num_fuel_servers"])),
             ("inspection", int(self.config["num_inspection_vehicles"])),
             ("arm", int(self.config["num_arm_vehicles"])),
+            ("tractor", int(self.config["num_tow_vehicles"])),
         )
         depot_spots = (0, 10, 23, 35)
         for service_type, count in specifications:
@@ -1182,46 +1532,256 @@ class CarrierAircraftSchedulingEnv:
                 )
         return vehicles
 
+    def _available_tow_vehicles(self) -> List[ServiceVehicleRecord]:
+        return [
+            vehicle
+            for vehicle in self.service_vehicles
+            if vehicle.service_type == "tractor"
+            and vehicle.busy_aircraft_id is None
+        ]
+
+    def _preview_tow_vehicle(
+        self,
+        aircraft_id: int,
+        source: str,
+        target: str,
+        tow_not_before: float,
+    ) -> Optional[TowPlan]:
+        if self.traffic_planner is None or self.deck_layout is None:
+            return None
+        cache_key = (aircraft_id, source, target, tow_not_before)
+        if cache_key in self._tow_preview_cache:
+            return self._tow_preview_cache[cache_key]
+        approach = self._preview_tractor_approach(
+            source,
+            tow_not_before,
+        )
+        if approach is None:
+            self._tow_preview_cache[cache_key] = None
+            return None
+        towing = self.traffic_planner.plan(
+            f"preview:tow:{aircraft_id}:{approach.tractor_id}",
+            source,
+            target,
+            max(tow_not_before, approach.route.end_time),
+            shared_nodes=(source, target),
+            reserve=False,
+        )
+        if towing is None:
+            self._tow_preview_cache[cache_key] = None
+            return None
+        result = TowPlan(
+            tractor_id=approach.tractor_id,
+            approach_start=approach.start_time,
+            approach=approach.route,
+            towing=towing,
+        )
+        self._tow_preview_cache[cache_key] = result
+        return result
+
+    def _preview_tractor_approach(
+        self,
+        source: str,
+        tow_not_before: float,
+    ) -> Optional[TractorApproach]:
+        if self.traffic_planner is None or self.deck_layout is None:
+            return None
+        cache_key = (source, tow_not_before)
+        if cache_key in self._tractor_approach_cache:
+            return self._tractor_approach_cache[cache_key]
+        options: List[TractorApproach] = []
+        for tractor in self._available_tow_vehicles():
+            static_approach = self.deck_layout.graph.shortest_distance(
+                tractor.node_id,
+                source,
+            )
+            approach_start = max(
+                self.time,
+                tow_not_before - static_approach,
+            )
+            approach = self.traffic_planner.plan(
+                f"preview:{tractor.vehicle_id}",
+                tractor.node_id,
+                source,
+                approach_start,
+                shared_nodes=(tractor.node_id, source),
+                reserve=False,
+            )
+            if approach is None:
+                continue
+            options.append(
+                TractorApproach(
+                    tractor_id=tractor.vehicle_id,
+                    start_time=approach_start,
+                    route=approach,
+                )
+            )
+        if not options:
+            self._tractor_approach_cache[cache_key] = None
+            return None
+        result = min(
+            options,
+            key=lambda item: (item.route.end_time, item.tractor_id),
+        )
+        self._tractor_approach_cache[cache_key] = result
+        return result
+
+    def _dispatch_tow_vehicle(
+        self,
+        aircraft_id: int,
+        source: str,
+        target: str,
+        tow_not_before: float,
+    ) -> Tuple[ServiceVehicleRecord, TimedRoute]:
+        if self.traffic_planner is None:
+            raise RuntimeError("traffic planner is not initialized")
+        preview = self._preview_tow_vehicle(
+            aircraft_id,
+            source,
+            target,
+            tow_not_before,
+        )
+        if preview is None:
+            raise RuntimeError("no conflict-free tractor route")
+        tractor = next(
+            vehicle
+            for vehicle in self.service_vehicles
+            if vehicle.vehicle_id == preview.tractor_id
+        )
+        approach = self.traffic_planner.plan(
+            tractor.vehicle_id,
+            tractor.node_id,
+            source,
+            preview.approach_start,
+            shared_nodes=(tractor.node_id, source),
+            reserve=True,
+        )
+        if approach is None:
+            raise RuntimeError("tractor approach route became unavailable")
+        towing = self.traffic_planner.plan(
+            f"tow:{aircraft_id}",
+            source,
+            target,
+            max(tow_not_before, approach.end_time),
+            shared_nodes=(source, target),
+            reserve=True,
+        )
+        if towing is None:
+            self.traffic_planner.release(tractor.vehicle_id)
+            raise RuntimeError("aircraft towing route became unavailable")
+        tractor.busy_aircraft_id = aircraft_id
+        self.active_tow_vehicles[aircraft_id] = tractor.vehicle_id
+        return tractor, towing
+
+    def _release_tow_vehicle(
+        self,
+        aircraft_id: int,
+        node_id: str,
+    ) -> None:
+        tractor_id = self.active_tow_vehicles.pop(aircraft_id)
+        tractor = next(
+            vehicle
+            for vehicle in self.service_vehicles
+            if vehicle.vehicle_id == tractor_id
+        )
+        tractor.node_id = node_id
+        tractor.busy_aircraft_id = None
+
     def _dispatch_service_vehicle(
         self,
         service_type: str,
         aircraft_id: int,
+        vehicle_id: Optional[str] = None,
     ) -> Tuple[ServiceVehicleRecord, float]:
         available = [
             vehicle
             for vehicle in self.service_vehicles
             if vehicle.service_type == service_type
             and vehicle.busy_aircraft_id is None
+            and (vehicle_id is None or vehicle.vehicle_id == vehicle_id)
         ]
         if not available:
             raise RuntimeError(f"no free {service_type} service vehicle")
         aircraft = self.aircraft[aircraft_id]
         if aircraft.spot_id < 0:
             raise RuntimeError("service vehicle target has no parking spot")
-        target = (
-            self.deck_layout.parking_node(aircraft.spot_id)
-            if self.deck_layout is not None
-            else f"parking_{aircraft.spot_id}"
-        )
 
         def travel_time(vehicle: ServiceVehicleRecord) -> float:
-            if self.deck_layout is None:
-                return self._spot_transfer_time(aircraft.spot_id)
-            return self.deck_layout.graph.shortest_distance(
-                vehicle.node_id,
-                target,
+            route = self._preview_service_vehicle_route(
+                vehicle,
+                aircraft_id,
             )
+            if route is None:
+                if self.deck_layout is not None:
+                    return float("inf")
+                return self._spot_transfer_time(aircraft.spot_id)
+            return route.duration
 
         vehicle = min(
             available,
             key=lambda item: (travel_time(item), item.vehicle_id),
         )
         duration = travel_time(vehicle)
+        if not math.isfinite(duration):
+            raise RuntimeError(f"no conflict-free route for {vehicle.vehicle_id}")
+        if self.traffic_planner is not None and self.deck_layout is not None:
+            target = self.deck_layout.parking_node(aircraft.spot_id)
+            route = self.traffic_planner.plan(
+                vehicle.vehicle_id,
+                vehicle.node_id,
+                target,
+                self.time,
+                shared_nodes=(vehicle.node_id, target),
+                reserve=True,
+            )
+            if route is None:
+                raise RuntimeError(
+                    f"service route became unavailable: {vehicle.vehicle_id}"
+                )
+            duration = route.duration
         vehicle.busy_aircraft_id = aircraft_id
         self.active_service_vehicles[(service_type, aircraft_id)] = (
             vehicle.vehicle_id
         )
         return vehicle, duration
+
+    def _preview_service_vehicle_route(
+        self,
+        vehicle: ServiceVehicleRecord,
+        aircraft_id: int,
+    ) -> Optional[TimedRoute]:
+        cache_key = (vehicle.vehicle_id, aircraft_id)
+        if cache_key in self._service_route_cache:
+            return self._service_route_cache[cache_key]
+        aircraft = self.aircraft[aircraft_id]
+        if aircraft.spot_id < 0:
+            self._service_route_cache[cache_key] = None
+            return None
+        if self.deck_layout is None or self.traffic_planner is None:
+            result = TimedRoute(
+                entity_id=vehicle.vehicle_id,
+                source=vehicle.node_id,
+                target=f"parking_{aircraft.spot_id}",
+                nodes=(vehicle.node_id,),
+                ticks=(0,),
+                start_time=self.time,
+                end_time=self.time + self._spot_transfer_time(
+                    aircraft.spot_id
+                ),
+            )
+            self._service_route_cache[cache_key] = result
+            return result
+        target = self.deck_layout.parking_node(aircraft.spot_id)
+        result = self.traffic_planner.plan(
+            vehicle.vehicle_id,
+            vehicle.node_id,
+            target,
+            self.time,
+            shared_nodes=(vehicle.node_id, target),
+            reserve=False,
+        )
+        self._service_route_cache[cache_key] = result
+        return result
 
     def _expected_service_vehicle_travel(
         self,
@@ -1245,14 +1805,15 @@ class CarrierAircraftSchedulingEnv:
             return float("inf")
         if self.deck_layout is None:
             return self._spot_transfer_time(aircraft.spot_id)
-        target = self.deck_layout.parking_node(aircraft.spot_id)
-        return min(
-            self.deck_layout.graph.shortest_distance(
-                vehicle.node_id,
-                target,
-            )
+        durations = [
+            route.duration
             for vehicle in available
-        )
+            if (route := self._preview_service_vehicle_route(
+                vehicle,
+                aircraft_id,
+            )) is not None
+        ]
+        return min(durations, default=float("inf"))
 
     def _release_service_vehicle(
         self,
@@ -1298,6 +1859,51 @@ class CarrierAircraftSchedulingEnv:
         if 0 <= spot_id < len(self.parking_occupancy):
             if self.parking_occupancy[spot_id] == aircraft_id:
                 self.parking_occupancy[spot_id] = None
+                self.parking_release_times[spot_id] = self.time
+
+    def _landing_target_available(self, spot_id: int) -> bool:
+        if self.deck_layout is None:
+            return True
+        clearance = float(self.config["parking_interference_clearance"])
+        for target, interfering in self.deck_layout.landing_interference_pairs:
+            if target != spot_id:
+                continue
+            if self.parking_occupancy[interfering] is not None:
+                return False
+            if self.time < self.parking_release_times[interfering] + clearance:
+                return False
+        return True
+
+    def _launch_runway_available(
+        self,
+        runway_id: int,
+        aircraft_id: Optional[int] = None,
+    ) -> bool:
+        if self.deck_layout is None or self.deck_occupancy is None:
+            return True
+        if not 0 <= runway_id < len(self.deck_layout.launch_nodes):
+            return False
+        clearance = float(self.config["parking_interference_clearance"])
+        for spot_id in self.deck_layout.launch_blocking_spots[runway_id]:
+            if (
+                aircraft_id is not None
+                and self.aircraft[aircraft_id].spot_id == spot_id
+            ):
+                continue
+            if self.parking_occupancy[spot_id] is not None:
+                return False
+            if self.time < self.parking_release_times[spot_id] + clearance:
+                return False
+        runway_clearance = float(
+            self.config["runway_interference_clearance"]
+        )
+        for conflict_id in self.deck_layout.runway_conflicts[runway_id]:
+            conflict_node = self.deck_layout.launch_nodes[conflict_id]
+            if self.deck_occupancy.occupants[conflict_node]:
+                return False
+            if self.time < self.runway_release_times[conflict_id] + runway_clearance:
+                return False
+        return True
 
     def _time_until_group_launch(self, group: str) -> float:
         del group
@@ -1420,6 +2026,28 @@ class CarrierAircraftSchedulingEnv:
             + float(self.config["beta_launch"]) * completed["launch"]
         )
 
+    def _personnel_available(self, required: int) -> bool:
+        return (
+            not bool(self.config["personnel_scheduling_enabled"])
+            or self.free_personnel >= required
+        )
+
+    def _acquire_personnel(self, required: int) -> None:
+        if bool(self.config["personnel_scheduling_enabled"]):
+            self.free_personnel -= required
+
+    def _release_personnel(self, required: int) -> None:
+        if bool(self.config["personnel_scheduling_enabled"]):
+            self.free_personnel += required
+
+    def _invalidate_planning_cache(self) -> None:
+        self._candidate_cache = None
+        self._launch_route_cache.clear()
+        self._recovery_route_cache.clear()
+        self._tow_preview_cache.clear()
+        self._tractor_approach_cache.clear()
+        self._service_route_cache.clear()
+
     @staticmethod
     def _empty_completed_counts() -> Dict[str, int]:
         return {
@@ -1430,12 +2058,19 @@ class CarrierAircraftSchedulingEnv:
             "launch": 0,
         }
 
-    def _parse_action(self, action: Any) -> Optional[Tuple[int, int]]:
+    def _parse_action(
+        self,
+        action: Any,
+    ) -> Optional[Tuple[int, int, Optional[int], Optional[str]]]:
         if isinstance(action, dict):
             high_level = action.get("high_level")
             aircraft_id = action.get("aircraft_id")
+            target_id = action.get("target_id")
+            vehicle_id = action.get("vehicle_id")
         elif isinstance(action, (tuple, list)) and len(action) == 2:
             high_level, aircraft_id = action
+            target_id = None
+            vehicle_id = None
         else:
             return None
 
@@ -1446,9 +2081,26 @@ class CarrierAircraftSchedulingEnv:
             aircraft_id_int = int(aircraft_id)
         except (TypeError, ValueError):
             return None
-        return high_level_int, aircraft_id_int
+        target_id_int: Optional[int] = None
+        if target_id is not None:
+            try:
+                target_id_int = int(target_id)
+            except (TypeError, ValueError):
+                return None
+        return (
+            high_level_int,
+            aircraft_id_int,
+            target_id_int,
+            str(vehicle_id) if vehicle_id is not None else None,
+        )
 
-    def _is_action_valid(self, high_level: int, aircraft_id: int) -> bool:
+    def _is_action_valid(
+        self,
+        high_level: int,
+        aircraft_id: int,
+        target_id: Optional[int] = None,
+        vehicle_id: Optional[str] = None,
+    ) -> bool:
         if high_level not in HIGH_LEVEL_ACTIONS:
             return False
         if not 0 <= aircraft_id < self.num_aircraft:
@@ -1457,7 +2109,15 @@ class CarrierAircraftSchedulingEnv:
         if high_mask[high_level] != 1:
             return False
         low_mask = self.get_low_level_action_mask(high_level)
-        return low_mask[aircraft_id] == 1
+        if low_mask[aircraft_id] != 1:
+            return False
+        action_name = HIGH_LEVEL_ACTIONS[high_level]
+        candidates = self.get_target_candidates(high_level, aircraft_id)
+        if action_name in ("R", "L"):
+            return target_id is None or target_id in candidates
+        if action_name in ("F", "M", "I"):
+            return vehicle_id is None or vehicle_id in candidates
+        return True
 
     def _all_launched(self) -> bool:
         return all(aircraft.launch_status == 3 for aircraft in self.aircraft)

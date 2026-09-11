@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 
@@ -25,7 +25,7 @@ class PriorityRuleSolver:
         self.env = env
         self.rule = rule
 
-    def choose_action(self) -> Optional[Dict[str, int]]:
+    def choose_action(self) -> Optional[Dict[str, Any]]:
         candidates = self._legal_actions()
         if not candidates:
             return None
@@ -36,7 +36,9 @@ class PriorityRuleSolver:
             high_level, aircraft_id = min(candidates, key=self._spt_key)
         else:
             high_level, aircraft_id = min(candidates, key=self._edd_key)
-        return {"high_level": high_level, "aircraft_id": aircraft_id}
+        return self.env.complete_action(
+            {"high_level": high_level, "aircraft_id": aircraft_id}
+        )
 
     def _legal_actions(self) -> List[Tuple[int, int]]:
         mask = self.env.get_action_mask()
@@ -96,7 +98,9 @@ class PriorityRuleSolver:
                     "fuel",
                     aircraft_id,
                 )
-                + float(config["fuel_time_mean"])
+                + (
+                    1.0 - self.env.aircraft[aircraft_id].fuel_level
+                ) / float(config["fuel_rate_per_minute"])
             )
         if high_level == ACTION_INSPECTION:
             return (

@@ -33,5 +33,7 @@ class RandomSolver:
             if is_available
         ]
         aircraft_id = self.rng.choice(available_aircraft)
-        return {"high_level": high_level, "aircraft_id": aircraft_id}
-
+        return self.env.complete_action(
+            {"high_level": high_level, "aircraft_id": aircraft_id},
+            rng=self.rng,
+        )

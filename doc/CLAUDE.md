@@ -57,8 +57,8 @@ to maximizing completed sorties and must not be added as a second objective.
 
 - 45 aircraft share the deck fleet; the final five are tagged as initial
   reserves for observability but obey the same readiness rules.
-- 45 capacity-one parking nodes: 10 in the launch area, 10 in the recovery
-  area, and 25 in the support area.
+- 45 capacity-one parking nodes in four Haitian-derived clusters:
+  northwest 10, northeast 13, southwest 12, and southeast 10.
 - Fixed wave interval `wave_interval`, default 120 minutes.
 - Fixed simulation horizon `simulation_duration`, default 720 minutes.
 - A/B are alternating wave-demand labels, not immutable aircraft groups.
@@ -68,11 +68,12 @@ to maximizing completed sorties and must not be added as a second objective.
 - Aircraft cycle:
 
 ```text
-launch -> airborne -> recovery -> parking -> fueling || arming -> launch
+launch -> airborne -> recovery -> parking
+       -> fueling || inspection || arming -> launch
 ```
 
-- Fueling and arming may run in parallel after recovery.
-- Launch requires both fueling and arming to be complete.
+- Fueling, inspection, and arming may run in parallel after recovery.
+- Launch requires fueling, inspection, and arming to be complete.
 - Decisions are made at event times; time advances to the next queued event
   when no dispatch action is available.
 
@@ -81,24 +82,27 @@ launch -> airborne -> recovery -> parking -> fueling || arming -> launch
 | Resource | Base-model capacity | Supplied requirement |
 |---|---:|---:|
 | Recovery channel/runway | 1 | 1 |
-| Launch operation channel | 1 | Not separately specified |
-| Launch position nodes | 4 | 4 launch positions |
+| Launch operation channels | 3 | 3 takeoff runways |
+| Launch position nodes | 3 | Runways 29, 30, and 31 |
 | Parking spots | 45 | 45 |
-| Fuel servers | 20 | 20 stations, each covering two spots |
+| Fuel vehicles | 20 | Mobile equipment |
+| Inspection vehicles | 10 | Mobile equipment |
 | Arm vehicles | 10 | 10 |
+| Tow vehicles | 10 | Mobile equipment |
 | Ammo transport vehicles | 10 | 10 |
 | Lower weapon lifts | 6 | 6 |
 | Upper weapon lifts | 4 | 4 |
-| Active support personnel | 50 | 150 people across 50 three-shift posts |
+| Active support personnel | Not scheduled | Deferred |
 
-The base model interprets personnel as one aggregate pool of 50 simultaneously
-available workers. It does not model individual workers or shift rotation.
+Personnel state remains observable for compatibility, but personnel capacity
+does not mask or consume actions while `personnel_scheduling_enabled=False`.
 
 ### Stochastic processing assumptions
 
 - Recovery: fixed 1 minute.
 - Launch: fixed 1 minute.
-- Fueling: truncated normal duration with mean 20 and standard deviation 3.
+- Fuel is continuous on `[0, 1]`. Aircraft default to `0.2` after a sortie and
+  refuel at `0.05` fuel units per minute, so a full refuel takes 16 minutes.
 - Required ammunition quantity:
   - 1 item with probability 0.3;
   - 2 items with probability 0.4;
@@ -111,7 +115,6 @@ available workers. It does not model individual workers or shift rotation.
 - Arming stage 2:
   - upper-lift time sampled from a normal distribution with mean 3 and
     standard deviation 0.5;
-  - parking-to-aircraft transfer time;
   - per-item arming time sampled from a normal distribution with mean 5 and
     variance 2.
 - Every sampled processing duration is clamped to at least 0.1 minute.
@@ -127,18 +130,23 @@ standard deviation.
 - At most 20 launch operations may start in one wave.
 - Missed sorties are unfilled wave-demand slots, not misses assigned to fixed
   aircraft identities.
-- Recovery must complete before fueling or arming starts.
+- Recovery must complete before fueling, inspection, or arming starts.
 - Arming stage 1 must complete before arming stage 2.
-- Fueling and arming may overlap.
-- Both fueling and arming must complete before launch.
+- Fueling, inspection, and arming may overlap.
+- Fueling, inspection, and arming must complete before launch.
 - A parking spot can contain at most one aircraft at a time.
-- Launch requires an available route from the aircraft parking node to one of
-  four launch-position nodes.
+- Launch explicitly selects an available route from the aircraft parking node
+  to one of three launch-runway nodes.
 - Recovery requires an available route from the recovery runway to an
-  unoccupied parking node.
-- A reserved route has exclusive capacity-one occupancy until movement
-  completes; the destination remains occupied until the aircraft leaves it.
-- Concurrent resource and personnel usage must not exceed configured capacity.
+  explicitly selected unoccupied parking node.
+- Fueling, inspection, and arming explicitly select an available service
+  vehicle.
+- A tow vehicle first travels to the aircraft and then escorts it to the
+  selected parking position or launch runway.
+- Aircraft and all mobile vehicles share a Cooperative A* reservation table.
+  Nodes are mutually exclusive at each time tick; same-edge overlap and
+  opposite-direction traversal are prohibited.
+- Concurrent equipment usage must not exceed configured capacity.
 - An aircraft cannot be airborne and perform deck operations simultaneously.
 - The same operation instance cannot be started more than once.
 
@@ -152,21 +160,19 @@ requirements:
 - aircraft failures, repair distribution, hangar transfer, and return to service;
 - sea-state-dependent launch delay, recovery success rate, and wave-off;
 - pilots, command staff, individual support staff, rest, fatigue, and shifts;
-- aircraft elevators and tractor allocation;
+- aircraft elevators;
 - measured deck coordinates and the real adjacency matrix;
-- stepwise taxi motion, lane direction, turning radius, separation distance,
-  tractor use, and jet-blast constraints;
+- continuous coordinates, turning radius, geometric separation distance, and
+  jet-blast constraints;
 - mutual exclusion between the two launch positions stated to be in the
   recovery area and the recovery runway;
 - ammunition types, compatibility, inventory, assembly capacity, and storage;
-- fuel state while airborne and recovery queue endurance constraints.
+- fuel burn as a function of airborne time and recovery queue endurance.
 
-Aircraft movement uses a schematic graph with 19 pathway nodes and one-minute
-edges. The topology and atomic whole-route reservation are explicit structural
-assumptions because the supplied requirements do not provide coordinates or an
-adjacency matrix. Ammunition delivery still uses the historical scalar
-parking-transfer function: spot 0 takes 2 minutes, and every two additional
-spot indices add 1 minute.
+Movement uses a schematic graph with 15 pathway nodes and one-minute edges.
+Cooperative A* plans on `(node, time tick)` states and inserts waits to resolve
+node and edge conflicts. This is a discrete time-space tube, not the continuous
+aircraft-convex-hull collision model used by higher-fidelity studies.
 
 Do not describe these excluded items as implemented. Add them only through an
 explicit model extension with corresponding state, constraints, tests, and
@@ -178,7 +184,8 @@ evaluation scenarios.
 |---|---|
 | `env/config.py` | Base capacities, durations, reward constants, and action IDs |
 | `env/scenario.py` | Solver-independent scenario, process, mission-plan, duration-distribution, and deck-graph definitions |
-| `env/project_deck_graph.py` | Project-core schematic topology, node occupancy, shortest-route search, and atomic route reservations |
+| `env/project_deck_graph.py` | Haitian-derived schematic topology and static destination occupancy |
+| `env/traffic_planner.py` | Cooperative A* node/edge reservation table shared by aircraft and mobile vehicles |
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
 | `env/yoon_sortie_env.py` | Executable Yoon 2023 structural replication with mission, movement, runway, lift, hangar, and maintenance events |
 | `scripts/solve.py` | Unified command-line runner and CSV export |
@@ -210,17 +217,23 @@ evaluation scenarios.
 Every solver exposes:
 
 ```python
-choose_action() -> Optional[Dict[str, int]]
+choose_action() -> Optional[Dict[str, Any]]
 ```
 
 A dispatch action is:
 
 ```python
-{"high_level": 0 | 1 | 2 | 3, "aircraft_id": int}
+{
+    "high_level": 0 | 1 | 2 | 3 | 4,
+    "aircraft_id": int,
+    "target_id": int,      # recovery parking or launch runway
+    "vehicle_id": str,     # fuel, arm, or inspection vehicle
+}
 ```
 
-The high-level actions are recovery (`R`), fueling (`F`), arming (`M`), and
-launch (`L`). Return `None` only when no legal action is available. All solvers
+The high-level actions are recovery (`R`), fueling (`F`), arming (`M`), launch
+(`L`), and inspection (`I`). Only the field relevant to the selected action is
+required. Return `None` only when no legal action is available. All solvers
 must honor `env.get_action_mask()`.
 
 ### Event system
@@ -231,14 +244,16 @@ Events are stored in a `heapq` priority queue. Current event types are:
 - `recover_done`
 - `park_done`
 - `fuel_done`
+- `inspection_done`
 - `ammo_to_assembly_done`
 - `arm_done`
 - `taxi_to_launch_done`
 - `launch_done`
 - `simulation_end`
 
-The four principal status dimensions are `recovery_status`, `fuel_status`,
-`arm_status`, and `launch_status`. Arming additionally uses `arm_stage`.
+The five principal status dimensions are `recovery_status`, `fuel_status`,
+`inspection_status`, `arm_status`, and `launch_status`. Arming additionally
+uses `arm_stage`.
 
 ## Commands
 
@@ -379,13 +394,24 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - Fuel, inspection, and arming now use separate mobile vehicle pools. Vehicles
   have locations, include travel time in service completion, and may serve the
   same parked aircraft concurrently when their operations do not conflict.
-- Inspection is a fifth high-level action. RL uses 21 aircraft features,
-  20 global features, and observation schema version 4.
+- Tow vehicles travel to aircraft before launch or post-landing movement.
+  Aircraft and all mobile vehicles share Cooperative A* node and edge
+  reservations; head-on edge traversal is prohibited.
+- Recovery selects a parking target, launch selects a runway, and service
+  actions select a vehicle. Multi-stop parking transfer remains excluded.
+- Fuel is continuous; personnel scheduling and random failures are disabled.
+- Sparse parking/runway interference preserves the Haitian physical
+  relationships without copying incompatible 28-position indices.
+- Inspection is a fifth high-level action. RL uses 22 aircraft features,
+  20 global features, and observation schema version 5.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 33 unit tests pass. In the fixed seed-10007, 60-minute, 12-wave run,
+- All 39 unit tests pass. In the fixed seed-10007, 60-minute, 12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/Sampled/CP-SAT complete
-  148/139/146/141/147/148/146 launches. The result is stored in
-  `outputs/haitian_mobile_services_60min_seed10007.csv`.
+  97/113/118/106/118/101/119 launches. The result is stored in
+  `outputs/haitian_spacetime_60min_seed10007.csv`.
+- Every non-random baseline exceeds Random for this regression seed; CP-SAT is
+  highest at 119. Treat this as a fixed-seed regression, not a statistical
+  ranking.
 - Detailed assumptions and remaining work are in
   `doc/haitian_deck_environment_spec.md`.
 - Fixed `seed=10007`, 60-minute, 12-wave results with the graph enabled are:

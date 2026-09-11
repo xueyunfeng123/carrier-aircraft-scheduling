@@ -133,6 +133,7 @@ class SpatialCarrierEnvironmentTest(unittest.TestCase):
         env.reset(seed=7)
         aircraft = env.aircraft[0]
         aircraft.fuel_status = 0
+        aircraft.fuel_level = 0.2
         aircraft.inspection_status = 0
         aircraft.arm_status = 0
         aircraft.arm_quantity_required = 1

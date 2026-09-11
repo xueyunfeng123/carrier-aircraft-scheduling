@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.obs_encoder import (
@@ -79,9 +79,9 @@ class RLSolver:
             device=device,
         )
 
-    def choose_action(self) -> Optional[Dict[str, int]]:
+    def choose_action(self) -> Optional[Dict[str, Any]]:
         encoded = encode_observation(self.env)
         if not any(encoded.high_mask):
             return None
         action, _, _ = self.trainer.select_action(encoded, deterministic=self.deterministic)
-        return action
+        return self.env.complete_action(action)

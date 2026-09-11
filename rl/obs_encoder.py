@@ -9,9 +9,9 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import HIGH_LEVEL_ACTIONS
 
 
-AIRCRAFT_FEATURE_DIM = 21
+AIRCRAFT_FEATURE_DIM = 22
 GLOBAL_FEATURE_DIM = 20
-OBSERVATION_SCHEMA_VERSION = 4
+OBSERVATION_SCHEMA_VERSION = 5
 
 
 @dataclass
@@ -118,18 +118,19 @@ def _normalize_aircraft(
         row[6] / max(1.0, num_aircraft),
         row[7] / 2.0,
         row[8] / 2.0,
-        row[9] / 2.0,
+        min(1.0, max(0.0, row[9])),
         row[10] / 2.0,
-        row[11] / 4.0,
-        row[12] / 3.0,
-        row[13] / 4.0,
-        row[14] / simulation_duration,
+        row[11] / 2.0,
+        row[12] / 4.0,
+        row[13] / 3.0,
+        row[14] / 4.0,
         row[15] / simulation_duration,
         row[16] / simulation_duration,
         row[17] / simulation_duration,
         row[18] / simulation_duration,
         row[19] / simulation_duration,
         row[20] / simulation_duration,
+        row[21] / simulation_duration,
     ]
 
 

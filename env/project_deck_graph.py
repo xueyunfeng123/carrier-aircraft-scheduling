@@ -37,6 +37,9 @@ class ProjectDeckLayout:
     launch_nodes: Tuple[str, ...]
     recovery_node: str
     parking_sections: Tuple[str, ...]
+    launch_blocking_spots: Tuple[Tuple[int, ...], ...]
+    landing_interference_pairs: Tuple[Tuple[int, int], ...]
+    runway_conflicts: Tuple[Tuple[int, ...], ...]
     assumptions: ProjectDeckGraphAssumptions
 
     def parking_node(self, spot_id: int) -> str:
@@ -153,8 +156,10 @@ def build_project_deck_layout(
         tuple(pathway_index[("south", index)] for index in (0, 1)),
         tuple(pathway_index[("south", index)] for index in (3, 4)),
     )
+    cluster_ranges: List[range] = []
     spot_id = 0
     for cluster_size, anchors in zip(cluster_sizes, cluster_anchors):
+        cluster_ranges.append(range(spot_id, spot_id + cluster_size))
         for local_index in range(cluster_size):
             parking_node = parking_nodes[spot_id]
             anchor = anchors[
@@ -168,6 +173,32 @@ def build_project_deck_layout(
                 )
             )
             spot_id += 1
+
+    northeast_east = tuple(
+        spot
+        for local_index, spot in enumerate(cluster_ranges[1])
+        if _spread_index(local_index, cluster_sizes[1], 0, 1) == 1
+    )
+    southeast_east = tuple(
+        spot
+        for local_index, spot in enumerate(cluster_ranges[3])
+        if _spread_index(local_index, cluster_sizes[3], 0, 1) == 1
+    )
+    # The PDF supplies a 28-position interference table that cannot be copied
+    # position-for-position into the scaled 45-position graph. Keep only the
+    # closest east-side spot for runways 29 and 30; runway 31 remains clear.
+    # This preserves the physical dependency without deadlocking a full deck.
+    launch_blocking_spots = (
+        northeast_east[-1:],
+        southeast_east[-1:],
+        (),
+    )
+    landing_interference_pairs = tuple(
+        pair
+        for cluster_range in cluster_ranges
+        for pair in _cluster_interference_pairs(cluster_range)
+    )
+    runway_conflicts = ((1,), (0,), ())
 
     launch_connections = (
         pathway_index[("north", 4)],
@@ -197,12 +228,15 @@ def build_project_deck_layout(
         launch_nodes=launch_nodes,
         recovery_node=recovery_node,
         parking_sections=tuple(sections),
+        launch_blocking_spots=launch_blocking_spots,
+        landing_interference_pairs=landing_interference_pairs,
+        runway_conflicts=runway_conflicts,
         assumptions=assumptions,
     )
 
 
 class DeckOccupancy:
-    """Capacity accounting and atomic path reservation for one deck graph."""
+    """Static location capacity accounting for the project deck graph."""
 
     def __init__(self, graph: DeckGraph):
         self.graph = graph
@@ -256,7 +290,7 @@ class DeckOccupancy:
     ) -> DeckRouteReservation:
         if aircraft_id in self.active_routes:
             raise RuntimeError(f"aircraft already has an active route: {aircraft_id}")
-        nodes_to_reserve = path[1:] if release_source else path
+        nodes_to_reserve = (target,)
         for node_id in nodes_to_reserve:
             node = self.graph.node(node_id)
             occupants = self.occupants[node_id]
@@ -338,3 +372,12 @@ def _scaled_cluster_sizes(
     for index in order[:remainder]:
         sizes[index] += 1
     return tuple(sizes)  # type: ignore[return-value]
+
+
+def _cluster_interference_pairs(
+    cluster_range: range,
+) -> Tuple[Tuple[int, int], ...]:
+    spots = tuple(cluster_range)
+    if len(spots) < 6:
+        return ()
+    return ((spots[-1], spots[-2]),)

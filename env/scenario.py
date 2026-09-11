@@ -165,6 +165,10 @@ class DeckGraph:
                 return distance
         raise ValueError(f"nodes are not directly connected: {source} -> {target}")
 
+    def neighbors(self, node_id: str) -> Tuple[Tuple[str, float], ...]:
+        self.node(node_id)
+        return self._adjacency[node_id]
+
     def shortest_distance(self, source: str, target: str) -> float:
         distance, _ = self._shortest_route(source, target)
         return distance
@@ -521,6 +525,24 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
             )
         )
 
+    personnel_enabled = bool(config["personnel_scheduling_enabled"])
+    fuel_resources = (("fuel_vehicle", 1),)
+    inspection_resources = (("inspection_vehicle", 1),)
+    arm_resources = (("arm_vehicle", 1),)
+    if personnel_enabled:
+        fuel_resources += (
+            ("personnel", int(config["fuel_personnel_required"])),
+        )
+        inspection_resources += (
+            ("personnel", int(config["inspection_personnel_required"])),
+        )
+        arm_resources += (
+            ("personnel", int(config["arm_personnel_required"])),
+        )
+    refuel_duration = (
+        1.0 - float(config["post_sortie_fuel_level"])
+    ) / float(config["fuel_rate_per_minute"])
+
     processes = (
         ProcessSpec(
             "recovery",
@@ -532,14 +554,24 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
             "fueling",
             "support",
             DurationDistribution(
-                "normal",
-                (float(config["fuel_time_mean"]), float(config["fuel_time_std"])),
+                "deterministic",
+                (refuel_duration,),
             ),
             ("parking",),
-            (
-                ("fuel_server", 1),
-                ("personnel", int(config["fuel_personnel_required"])),
+            fuel_resources,
+        ),
+        ProcessSpec(
+            "inspection",
+            "support",
+            DurationDistribution(
+                "normal",
+                (
+                    float(config["inspection_time_mean"]),
+                    float(config["inspection_time_std"]),
+                ),
             ),
+            ("parking",),
+            inspection_resources,
         ),
         ProcessSpec(
             "ammo_extract",
@@ -591,10 +623,7 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
                 ),
             ),
             ("parking",),
-            (
-                ("arm_vehicle", 1),
-                ("personnel", int(config["arm_personnel_required"])),
-            ),
+            arm_resources,
         ),
         ProcessSpec(
             "launch",
@@ -619,9 +648,9 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
         ),
         deck_graph=DeckGraph(tuple(nodes), tuple(edges)),
         policy_rules=(
-            "A and B groups alternate launch and recovery waves",
-            "fueling and arming may overlap",
-            "launch requires fueling and arming completion",
+            "A and B are alternating wave-demand labels",
+            "fueling, inspection, and arming may overlap",
+            "launch requires fueling, inspection, and arming completion",
         ),
         unresolved_parameters=(),
         metadata=(

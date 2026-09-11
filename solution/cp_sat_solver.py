@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from solution.priority_rule_solver import (
@@ -42,7 +42,7 @@ class CPSATSolver:
         self.max_time_seconds = max_time_seconds
         self._priority = PriorityRuleSolver(env, "edd")
 
-    def choose_action(self) -> Optional[Dict[str, int]]:
+    def choose_action(self) -> Optional[Dict[str, Any]]:
         mask = self.env.get_action_mask()
         if not any(mask["high_level"]):
             return None
@@ -61,7 +61,12 @@ class CPSATSolver:
                     item,
                 ),
             )
-            return {"high_level": ACTION_RECOVERY, "aircraft_id": aircraft_id}
+            return self.env.complete_action(
+                {
+                    "high_level": ACTION_RECOVERY,
+                    "aircraft_id": aircraft_id,
+                }
+            )
 
         launch_ids = (
             self._candidate_ids(mask, ACTION_LAUNCH)
@@ -82,7 +87,9 @@ class CPSATSolver:
                     item,
                 ),
             )
-            return {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
+            return self.env.complete_action(
+                {"high_level": ACTION_LAUNCH, "aircraft_id": aircraft_id}
+            )
 
         service_actions = [
             (high_level, aircraft_id)
@@ -94,13 +101,17 @@ class CPSATSolver:
             return None
         if len(service_actions) == 1:
             high_level, aircraft_id = service_actions[0]
-            return {"high_level": high_level, "aircraft_id": aircraft_id}
+            return self.env.complete_action(
+                {"high_level": high_level, "aircraft_id": aircraft_id}
+            )
 
         selected = self._solve_service_batch(service_actions)
         if not selected:
             selected = service_actions
         high_level, aircraft_id = min(selected, key=self._priority._edd_key)
-        return {"high_level": high_level, "aircraft_id": aircraft_id}
+        return self.env.complete_action(
+            {"high_level": high_level, "aircraft_id": aircraft_id}
+        )
 
     def _candidate_ids(self, mask: Dict[str, object], high_level: int) -> List[int]:
         low_mask = mask["low_level_by_high"][high_level]
@@ -152,12 +163,13 @@ class CPSATSolver:
             self.env.config["inspection_personnel_required"]
         )
         arm_personnel = int(self.env.config["arm_personnel_required"])
-        model.Add(
-            fuel_personnel * sum(fuel_vars)
-            + inspection_personnel * sum(inspection_vars)
-            + arm_personnel * sum(arm_vars)
-            <= self.env.free_personnel
-        )
+        if bool(self.env.config["personnel_scheduling_enabled"]):
+            model.Add(
+                fuel_personnel * sum(fuel_vars)
+                + inspection_personnel * sum(inspection_vars)
+                + arm_personnel * sum(arm_vars)
+                <= self.env.free_personnel
+            )
 
         objective_terms = []
         candidate_aircraft = sorted({aircraft_id for _, aircraft_id in service_actions})
