@@ -434,6 +434,10 @@ class CarrierAircraftSchedulingEnv:
         if action_name == "L":
             if self.deck_layout is None:
                 return [0]
+            deadline = min(
+                (self.current_wave_index + 1) * self.wave_interval,
+                self.simulation_duration,
+            )
             options = [
                 (route[2], runway_id)
                 for runway_id in range(len(self.deck_layout.launch_nodes))
@@ -445,6 +449,10 @@ class CarrierAircraftSchedulingEnv:
                     )
                 )
                 is not None
+                and self.time
+                + route[2]
+                + float(self.config["launch_time"])
+                <= deadline
             ]
             return [runway_id for _, runway_id in sorted(options)]
         service_type = {
@@ -663,6 +671,9 @@ class CarrierAircraftSchedulingEnv:
                 self._record_missed_sorties(self.current_wave_index)
                 self._log_event("simulation_end")
                 continue
+            if event.event_type == "clearance_done":
+                self._log_event("clearance_done")
+                continue
 
             aircraft = self.aircraft[event.aircraft_id]
             self._log_event(event.event_type, event.aircraft_id)
@@ -766,6 +777,10 @@ class CarrierAircraftSchedulingEnv:
                 if launch_wave is None:
                     raise RuntimeError("launch completed without an assigned wave")
                 wave_record = self._wave_record(launch_wave)
+                if wave_record["missed_recorded"]:
+                    raise RuntimeError(
+                        "launch completed after its assigned wave was closed"
+                    )
                 aircraft.launch_status = 3
                 aircraft.launch_end = self.time
                 aircraft.sorties_completed += 1
@@ -1176,6 +1191,8 @@ class CarrierAircraftSchedulingEnv:
         missed = max(0, self.group_size - record["sorties_completed"])
         record["missed_sorties"] = missed
         record["missed_recorded"] = True
+        if record["sorties_completed"] + missed != self.group_size:
+            raise RuntimeError("wave sortie accounting is inconsistent")
         for slot_index in range(missed):
             self.missed_sortie_records.append(
                 {
@@ -1420,6 +1437,9 @@ class CarrierAircraftSchedulingEnv:
         reservation = self.active_deck_routes.pop(aircraft_id)
         runway_id = self.deck_layout.launch_nodes.index(reservation.target)
         self.runway_release_times[runway_id] = self.time
+        self._schedule_clearance_event(
+            self.time + float(self.config["runway_interference_clearance"])
+        )
         self.deck_occupancy.release_target(aircraft_id, reservation.target)
         self.deck_occupancy.validate()
 
@@ -1860,6 +1880,10 @@ class CarrierAircraftSchedulingEnv:
             if self.parking_occupancy[spot_id] == aircraft_id:
                 self.parking_occupancy[spot_id] = None
                 self.parking_release_times[spot_id] = self.time
+                self._schedule_clearance_event(
+                    self.time
+                    + float(self.config["parking_interference_clearance"])
+                )
 
     def _landing_target_available(self, spot_id: int) -> bool:
         if self.deck_layout is None:
@@ -1908,6 +1932,10 @@ class CarrierAircraftSchedulingEnv:
     def _time_until_group_launch(self, group: str) -> float:
         del group
         return self._time_until_launch_window()
+
+    def _schedule_clearance_event(self, event_time: float) -> None:
+        if self.time < event_time < self.simulation_duration:
+            self._push_event(event_time, "clearance_done", -1)
 
     def _time_until_launch_window(self) -> float:
         current_record = self.wave_records[-1]

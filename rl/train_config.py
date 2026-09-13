@@ -23,3 +23,4 @@ class PPOConfig:
     env_reward_scale: float = 0.0
     sortie_bonus: float = 1.0
     miss_penalty: float = 0.0
+    progress_shaping: float = 0.0

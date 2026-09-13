@@ -16,15 +16,20 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on local enviro
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG
 from rl.behavior_cloning import (
+    Demonstrations,
+    append_demonstration,
+    build_demonstration_teacher,
     collect_heuristic_demonstrations,
     pretrain_behavior_cloning,
 )
-from rl.checkpoint import save_checkpoint
+from rl.checkpoint import load_checkpoint, save_checkpoint
 from rl.model import CarrierPolicyValueNet
 from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
     GLOBAL_FEATURE_DIM,
     OBSERVATION_SCHEMA_VERSION,
+    TARGET_AUX_FEATURE_DIM,
+    TARGET_FEATURE_DIM,
     encode_observation,
     to_torch_batch,
 )
@@ -63,6 +68,7 @@ def main() -> None:
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/rl_policy.pt")
+    parser.add_argument("--init-checkpoint", type=str, default="")
     parser.add_argument("--total-updates", type=int, default=200)
     parser.add_argument("--rollout-steps", type=int, default=512)
     parser.add_argument("--update-epochs", type=int, default=4)
@@ -70,15 +76,30 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=3.0e-4)
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--gae-lambda", type=float, default=0.98)
+    parser.add_argument("--clip-ratio", type=float, default=0.2)
+    parser.add_argument("--value-coef", type=float, default=0.5)
+    parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--aircraft-embed-dim", type=int, default=64)
+    parser.add_argument("--target-embed-dim", type=int, default=64)
     parser.add_argument("--bc-episodes", type=int, default=5)
+    parser.add_argument(
+        "--bc-teacher",
+        choices=("heuristic", "cp_sat", "elite_cp", "mixed"),
+        default="heuristic",
+    )
     parser.add_argument("--bc-epochs", type=int, default=10)
     parser.add_argument("--bc-minibatch-size", type=int, default=256)
     parser.add_argument("--bc-learning-rate", type=float, default=1.0e-3)
+    parser.add_argument("--bc-low-loss-weight", type=float, default=1.0)
+    parser.add_argument("--bc-target-loss-weight", type=float, default=1.0)
+    parser.add_argument("--dagger-iterations", type=int, default=0)
+    parser.add_argument("--dagger-episodes", type=int, default=1)
+    parser.add_argument("--dagger-epochs", type=int, default=10)
     parser.add_argument("--env-reward-scale", type=float, default=0.0)
     parser.add_argument("--sortie-bonus", type=float, default=1.0)
     parser.add_argument("--miss-penalty", type=float, default=0.0)
+    parser.add_argument("--progress-shaping", type=float, default=0.0)
     parser.add_argument("--eval-runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--save-every", type=int, default=10)
     args = parser.parse_args()
@@ -92,6 +113,9 @@ def main() -> None:
         learning_rate=args.learning_rate,
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
+        clip_ratio=args.clip_ratio,
+        value_coef=args.value_coef,
+        entropy_coef=args.entropy_coef,
         update_epochs=args.update_epochs,
         minibatch_size=args.minibatch_size,
         hidden_dim=args.hidden_dim,
@@ -99,6 +123,7 @@ def main() -> None:
         env_reward_scale=args.env_reward_scale,
         sortie_bonus=args.sortie_bonus,
         miss_penalty=args.miss_penalty,
+        progress_shaping=args.progress_shaping,
     )
 
     env = CarrierAircraftSchedulingEnv(config)
@@ -108,7 +133,25 @@ def main() -> None:
         GLOBAL_FEATURE_DIM,
         hidden_dim=args.hidden_dim,
         aircraft_embed_dim=args.aircraft_embed_dim,
+        target_feature_dim=(
+            TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
+        ),
+        target_embed_dim=args.target_embed_dim,
     ).to(args.device)
+    if args.init_checkpoint:
+        initial_payload = load_checkpoint(
+            args.init_checkpoint,
+            device=args.device,
+        )
+        initial_schema = initial_payload.get("extra", {}).get(
+            "observation_schema_version",
+            1,
+        )
+        if initial_schema != OBSERVATION_SCHEMA_VERSION:
+            raise ValueError(
+                "initial RL checkpoint observation schema is incompatible"
+            )
+        model.load_state_dict(initial_payload["model_state"])
 
     bc_stats = None
     if args.bc_episodes > 0 and args.bc_epochs > 0:
@@ -119,6 +162,7 @@ def main() -> None:
         demonstrations = collect_heuristic_demonstrations(
             config,
             demonstration_seeds,
+            teacher=args.bc_teacher,
         )
         bc_optimizer = torch.optim.Adam(
             model.parameters(),
@@ -131,13 +175,53 @@ def main() -> None:
             epochs=args.bc_epochs,
             minibatch_size=args.bc_minibatch_size,
             device=args.device,
+            low_loss_weight=args.bc_low_loss_weight,
+            target_loss_weight=args.bc_target_loss_weight,
         )
+        for dagger_iteration in range(args.dagger_iterations):
+            dagger_demonstrations = collect_dagger_demonstrations(
+                model,
+                config,
+                [
+                    args.eval_seed
+                    + dagger_iteration * args.dagger_episodes
+                    + run_id
+                    for run_id in range(args.dagger_episodes)
+                ],
+                args.device,
+                args.bc_teacher,
+                ppo_config,
+            )
+            demonstrations.extend(dagger_demonstrations)
+            bc_stats = pretrain_behavior_cloning(
+                model,
+                bc_optimizer,
+                demonstrations,
+                epochs=args.dagger_epochs,
+                minibatch_size=args.bc_minibatch_size,
+                device=args.device,
+                low_loss_weight=args.bc_low_loss_weight,
+                target_loss_weight=args.bc_target_loss_weight,
+            )
+            print(
+                "dagger,"
+                f"iteration,{dagger_iteration + 1},"
+                f"new_samples,{len(dagger_demonstrations)},"
+                f"total_samples,{len(demonstrations)},"
+                f"accuracy,{bc_stats['accuracy']:.6f},"
+                f"high_accuracy,{bc_stats['high_accuracy']:.6f},"
+                f"low_accuracy,{bc_stats['low_accuracy']:.6f},"
+                f"target_accuracy,{bc_stats['target_accuracy']:.6f}"
+            )
         print(
             "bc,"
             f"episodes,{args.bc_episodes},"
             f"samples,{len(demonstrations)},"
             f"loss,{bc_stats['loss']:.6f},"
-            f"accuracy,{bc_stats['accuracy']:.6f}"
+            f"accuracy,{bc_stats['accuracy']:.6f},"
+            f"high_accuracy,{bc_stats['high_accuracy']:.6f},"
+            f"low_accuracy,{bc_stats['low_accuracy']:.6f},"
+            f"target_accuracy,{bc_stats['target_accuracy']:.6f}"
         )
         del demonstrations, bc_optimizer
 
@@ -155,14 +239,21 @@ def main() -> None:
             "best_update": best_update,
             "updates_completed": updates_completed,
             "eval_seed": args.eval_seed,
+            "init_checkpoint": args.init_checkpoint,
             "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
             "env_config": config,
             "ppo_config": ppo_config.__dict__,
             "behavior_cloning": {
                 "episodes": args.bc_episodes,
+                "teacher": args.bc_teacher,
                 "epochs": args.bc_epochs,
                 "minibatch_size": args.bc_minibatch_size,
                 "learning_rate": args.bc_learning_rate,
+                "low_loss_weight": args.bc_low_loss_weight,
+                "target_loss_weight": args.bc_target_loss_weight,
+                "dagger_iterations": args.dagger_iterations,
+                "dagger_episodes": args.dagger_episodes,
+                "dagger_epochs": args.dagger_epochs,
                 "stats": bc_stats,
             },
         }
@@ -263,7 +354,11 @@ def collect_rollout(
                 actions_in_episode = 0
             continue
 
-        action, log_prob, value = trainer.select_action(encoded, deterministic=False)
+        action, log_prob, value = trainer.select_action(
+            encoded,
+            env,
+            deterministic=False,
+        )
         actions_in_episode += 1
         reward, done = step_with_shaping(env, action, config)
         while not done:
@@ -277,6 +372,9 @@ def collect_rollout(
             encoded,
             action["high_level"],
             action["aircraft_id"],
+            action["target_slot"],
+            action["_target_mask"],
+            action["_target_aux"],
             reward,
             done,
             value,
@@ -288,18 +386,97 @@ def collect_rollout(
     return buffer
 
 
+def collect_dagger_demonstrations(
+    model,
+    env_config: Dict,
+    seeds,
+    device: str,
+    teacher_name: str,
+    ppo_config: PPOConfig,
+) -> Demonstrations:
+    demonstrations = Demonstrations()
+    learner = PPOTrainer(
+        model,
+        optimizer=None,
+        config=ppo_config,
+        device=device,
+    )
+    model.eval()
+    for seed in seeds:
+        env = CarrierAircraftSchedulingEnv(env_config)
+        env.reset(seed=seed)
+        teacher = (
+            build_demonstration_teacher(
+                env,
+                "cp_sat" if seed % 2 == 0 else "heuristic",
+            )
+            if teacher_name == "mixed"
+            else build_demonstration_teacher(env, teacher_name)
+        )
+        steps = 0
+        while not env.done and steps < 100_000:
+            encoded = encode_observation(env)
+            if not any(encoded.high_mask):
+                env.step(None)
+                steps += 1
+                continue
+            teacher_action = teacher.choose_action()
+            if teacher_action is None:
+                raise RuntimeError(
+                    "demonstration teacher returned no legal action"
+                )
+            append_demonstration(
+                demonstrations,
+                env,
+                encoded,
+                teacher_action,
+            )
+            learner_action, _, _ = learner.select_action(
+                encoded,
+                env,
+                deterministic=True,
+            )
+            env.step(learner_action)
+            steps += 1
+        if not env.done:
+            raise RuntimeError(
+                "DAgger demonstration exceeded 100000 steps"
+            )
+    return demonstrations
+
+
 def step_with_shaping(env: CarrierAircraftSchedulingEnv, action, config: PPOConfig):
     before = env.get_evaluation_metrics()
+    before_progress = readiness_potential(env)
     _, reward, done, _ = env.step(action)
     after = env.get_evaluation_metrics()
+    after_progress = 0.0 if done else readiness_potential(env)
     delta_sorties = after["total_sorties_completed"] - before["total_sorties_completed"]
     delta_missed = after["total_missed_sorties"] - before["total_missed_sorties"]
     shaped_reward = (
         config.env_reward_scale * reward
         + config.sortie_bonus * delta_sorties
         - config.miss_penalty * delta_missed
+        + config.progress_shaping
+        * (config.gamma * after_progress - before_progress)
     )
     return shaped_reward, done
+
+
+def readiness_potential(env: CarrierAircraftSchedulingEnv) -> float:
+    service_progress = sum(
+        int(aircraft.fuel_status == 2)
+        + int(aircraft.inspection_status == 2)
+        + int(aircraft.arm_status == 2)
+        for aircraft in env.aircraft
+        if not aircraft.is_airborne
+        and aircraft.recovery_status == 2
+    )
+    completed_sorties = sum(
+        aircraft.sorties_completed
+        for aircraft in env.aircraft
+    )
+    return float(3 * completed_sorties + service_progress)
 
 
 def estimate_value(model, env: CarrierAircraftSchedulingEnv, device: str) -> float:
@@ -308,7 +485,12 @@ def estimate_value(model, env: CarrierAircraftSchedulingEnv, device: str) -> flo
     encoded = encode_observation(env)
     batch = to_torch_batch(encoded, device)
     with torch.no_grad():
-        _, _, value = model(batch["aircraft"], batch["global"])
+        _, _, value = model(
+            batch["aircraft"],
+            batch["global"],
+            batch["targets"],
+            batch["low_aux"],
+        )
     return float(value.item())
 
 

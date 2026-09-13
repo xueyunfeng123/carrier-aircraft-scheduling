@@ -20,6 +20,10 @@ checkpoints/
 *.pth
 *.ckpt
 
+!checkpoints/
+checkpoints/*
+!checkpoints/rl_target_bc_ppo_120.pt
+
 runs.csv
 timing.csv
 missed.csv

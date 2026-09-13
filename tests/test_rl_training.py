@@ -14,16 +14,37 @@ from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
     GLOBAL_FEATURE_DIM,
     OBSERVATION_SCHEMA_VERSION,
+    TARGET_AUX_FEATURE_DIM,
+    TARGET_FEATURE_DIM,
     encode_observation,
+    target_context_for_action,
+    target_mask_for_action,
 )
+from rl.ppo_trainer import PPOTrainer
 from rl.train_config import PPOConfig
 from scripts.train_rl import collect_rollout
 
 
 class FixedLaunchTrainer:
-    def select_action(self, encoded, deterministic: bool = False):
-        del encoded, deterministic
-        return {"high_level": 3, "aircraft_id": 0}, 0.0, 0.0
+    def select_action(self, encoded, env, deterministic: bool = False):
+        del env, deterministic
+        target_slot = encoded.target_keys.index(("runway", 0))
+        target_mask = [
+            int(index == target_slot)
+            for index in range(len(encoded.targets))
+        ]
+        target_aux = [
+            [float(enabled), float(enabled)]
+            for enabled in target_mask
+        ]
+        return {
+            "high_level": 3,
+            "aircraft_id": 0,
+            "target_id": 0,
+            "target_slot": target_slot,
+            "_target_mask": target_mask,
+            "_target_aux": target_aux,
+        }, 0.0, 0.0
 
 
 class RolloutCollectionTest(unittest.TestCase):
@@ -86,12 +107,13 @@ class PolicyNetworkTest(unittest.TestCase):
         env.step({"high_level": 3, "aircraft_id": 0})
         moving = encode_observation(env)
 
-        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 5)
+        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 9)
         self.assertEqual(
             len(initial.aircraft[0]),
             AIRCRAFT_FEATURE_DIM,
         )
         self.assertEqual(len(initial.global_features), GLOBAL_FEATURE_DIM)
+        self.assertEqual(len(initial.targets[0]), TARGET_FEATURE_DIM)
         self.assertEqual(initial.global_features[15], 1.0)
         self.assertLess(moving.global_features[15], 1.0)
 
@@ -107,6 +129,88 @@ class PolicyNetworkTest(unittest.TestCase):
         self.assertEqual(tuple(high_logits.shape), (2, 5))
         self.assertEqual(tuple(low_logits.shape), (2, 5, 40))
         self.assertEqual(tuple(values.shape), (2,))
+
+    def test_target_logits_are_conditioned_on_selected_aircraft(self) -> None:
+        import torch
+
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            target_feature_dim=(
+                TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
+            ),
+        )
+        _, _, target_logits, values = model.forward_with_targets(
+            torch.zeros(2, 45, AIRCRAFT_FEATURE_DIM),
+            torch.zeros(2, GLOBAL_FEATURE_DIM),
+            torch.zeros(2, 99, TARGET_FEATURE_DIM),
+            torch.zeros(2, 99, TARGET_AUX_FEATURE_DIM),
+            torch.tensor([0, 3]),
+            torch.tensor([1, 2]),
+        )
+
+        self.assertEqual(tuple(target_logits.shape), (2, 99))
+        self.assertEqual(tuple(values.shape), (2,))
+
+    def test_policy_selects_a_complete_masked_action(self) -> None:
+        import torch
+
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+        encoded = encode_observation(env)
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+        )
+        trainer = PPOTrainer(
+            model,
+            optimizer=None,
+            config=PPOConfig(),
+        )
+
+        action, _, _ = trainer.select_action(
+            encoded,
+            env,
+            deterministic=True,
+        )
+
+        self.assertIn("target_slot", action)
+        self.assertIn("target_id", action)
+        self.assertTrue(
+            action["_target_mask"][action["target_slot"]]
+        )
+        self.assertTrue(env._is_action_valid(*env._parse_action(action)))
+
+    def test_target_mask_matches_launch_candidates(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+        encoded = encode_observation(env)
+
+        mask = target_mask_for_action(env, encoded, 3, 0)
+        masked_runways = {
+            value
+            for enabled, (target_type, value) in zip(
+                mask,
+                encoded.target_keys,
+            )
+            if enabled and target_type == "runway"
+        }
+
+        self.assertEqual(
+            masked_runways,
+            set(env.get_target_candidates(3, 0)),
+        )
+        _, target_aux = target_context_for_action(
+            env,
+            encoded,
+            3,
+            0,
+        )
+        first_runway = env.get_target_candidates(3, 0)[0]
+        first_slot = encoded.target_keys.index(
+            ("runway", first_runway)
+        )
+        self.assertEqual(target_aux[first_slot][1], 1.0)
 
     def test_legacy_low_level_head_shape_remains_available(self) -> None:
         import torch

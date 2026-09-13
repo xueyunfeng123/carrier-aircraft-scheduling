@@ -79,13 +79,18 @@ class SpatialCarrierEnvironmentTest(unittest.TestCase):
         env.reset(seed=7)
 
         env.step({"high_level": 3, "aircraft_id": 0})
-        self.assertEqual(env.event_queue[0].event_type, "taxi_to_launch_done")
-        taxi_end = env.event_queue[0].time
+        taxi_event = next(
+            event
+            for event in env.event_queue
+            if event.event_type == "taxi_to_launch_done"
+        )
+        taxi_end = taxi_event.time
         self.assertGreater(taxi_end, 0.0)
         self.assertEqual(env.get_state()["deck"]["active_movements"], 1)
         self.assertIsNone(env.parking_occupancy[0])
 
-        env._advance_time_to_next_event()
+        while env.time < taxi_end:
+            env._advance_time_to_next_event()
         self.assertEqual(env.time, taxi_end)
         self.assertEqual(env.event_queue[0].event_type, "launch_done")
         self.assertEqual(env.get_state()["deck"]["active_movements"], 0)
@@ -100,8 +105,8 @@ class SpatialCarrierEnvironmentTest(unittest.TestCase):
         env = CarrierAircraftSchedulingEnv()
         env.reset(seed=7)
         env.step({"high_level": 3, "aircraft_id": 0})
-        env._advance_time_to_next_event()
-        env._advance_time_to_next_event()
+        while not env.aircraft[0].is_airborne:
+            env._advance_time_to_next_event()
         env._start_wave(1)
 
         env.step({"high_level": 0, "aircraft_id": 0})
@@ -111,7 +116,8 @@ class SpatialCarrierEnvironmentTest(unittest.TestCase):
         reserved_spot = env.aircraft[0].spot_id
         self.assertEqual(env.parking_occupancy[reserved_spot], 0)
 
-        env._advance_time_to_next_event()
+        while env.aircraft[0].is_airborne:
+            env._advance_time_to_next_event()
         self.assertFalse(env.aircraft[0].is_airborne)
         self.assertEqual(env.aircraft[0].parking_status, 2)
         self.assertEqual(env.get_state()["deck"]["active_movements"], 0)

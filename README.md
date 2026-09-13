@@ -172,7 +172,7 @@ Reward = -α·Δt               （时间惩罚，α=1.0）
 ```text
 .
 ├── env/          # 事件驱动仿真环境、状态机与配置
-├── solution/     # Random、Heuristic、Sampled、RL 求解器
+├── solution/     # Random、优先规则、Heuristic、CP-SAT、RL 求解器
 ├── rl/           # 观测编码、策略网络、PPO 与 checkpoint
 ├── scripts/      # 求解、训练、评估和随机基线入口
 ├── outputs/      # 已有实验 CSV 与图表
@@ -266,6 +266,9 @@ python -m scripts.solve --solver heuristic --disable-spatial-graph
 python -m scripts.train_rl --checkpoint checkpoints/rl_policy.pt
 python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 
+# 复现三层目标选择 BC+PPO 实验
+./scripts/run_rl_target_experiment.sh
+
 # 旧版随机策略明细输出
 python -m scripts.random_policy_test
 
@@ -281,14 +284,15 @@ python -m scripts.benchmark_non_rl \
     --output outputs/spatial_deck_graph_disabled_control_60min_seed10007.csv
 ```
 
-默认 RL 训练先从 5 个训练 seed 收集 Heuristic 示范并进行行为克隆，再使用
-只包含成功放飞奖励的 PPO 微调。训练过程按固定评估 seed 保存最佳
-checkpoint，避免后续更新覆盖更好的策略。纯 PPO 对照可通过
-`--bc-episodes 0` 运行。
+RL 策略采用“作业类型→飞机→目标停机位/跑道/车辆”的三层 masked
+动作。默认训练从 5 个训练 seed 收集 Heuristic 示范并进行行为克隆，再
+使用 PPO 微调。训练过程按固定评估 seed 保存最佳 checkpoint，避免后续
+更新覆盖更好的策略。纯 PPO 对照可通过 `--bc-episodes 0` 运行。
 
 共享机队将飞机特征从永久 A/B 标记改为初始备用角色，并将全局特征改为
-波次填充率和待回收压力；空间图进一步加入空闲通道比例，当前观测版本为
-3。旧环境训练的 checkpoint 会被明确拒绝，必须重新执行 BC+PPO 训练。
+波次填充率和待回收压力；空间图进一步加入目标/车辆集合、候选排序先验
+和空闲通道比例，当前观测版本为 9。旧环境训练的 checkpoint 会被明确
+拒绝，必须重新执行 BC+PPO 训练。
 
 实验结果建议写入 `outputs/`：
 
@@ -313,7 +317,11 @@ python -m scripts.solve \
 字典格式：
 
 ```python
-{"high_level": 1, "aircraft_id": 3}
+{
+    "high_level": 1,
+    "aircraft_id": 3,
+    "vehicle_id": "fuel_2"
+}
 ```
 
 元组格式：

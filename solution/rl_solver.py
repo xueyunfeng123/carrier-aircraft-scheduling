@@ -10,6 +10,8 @@ from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
     GLOBAL_FEATURE_DIM,
     OBSERVATION_SCHEMA_VERSION,
+    TARGET_AUX_FEATURE_DIM,
+    TARGET_FEATURE_DIM,
     encode_observation,
 )
 
@@ -25,6 +27,7 @@ class RLSolver:
         deterministic: bool = True,
         hidden_dim: int = 128,
         aircraft_embed_dim: int = 64,
+        target_embed_dim: int = 64,
     ):
         try:
             import torch
@@ -47,6 +50,10 @@ class RLSolver:
             "global_feature_dim": GLOBAL_FEATURE_DIM,
             "hidden_dim": hidden_dim,
             "aircraft_embed_dim": aircraft_embed_dim,
+            "target_feature_dim": (
+                TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
+            ),
+            "target_embed_dim": target_embed_dim,
         }
         checkpoint_path = Path(checkpoint) if checkpoint else None
         checkpoint_payload = None
@@ -83,5 +90,11 @@ class RLSolver:
         encoded = encode_observation(self.env)
         if not any(encoded.high_mask):
             return None
-        action, _, _ = self.trainer.select_action(encoded, deterministic=self.deterministic)
-        return self.env.complete_action(action)
+        action, _, _ = self.trainer.select_action(
+            encoded,
+            self.env,
+            deterministic=self.deterministic,
+        )
+        action.pop("_target_mask", None)
+        action.pop("_target_aux", None)
+        return action

@@ -99,7 +99,8 @@ class ExplicitAssignmentTest(unittest.TestCase):
         self.assertIn(tractor_id, env.traffic_planner.routes)
         self.assertIn("tow:0", env.traffic_planner.routes)
 
-        env._advance_time_to_next_event()
+        while 0 in env.active_tow_vehicles:
+            env._advance_time_to_next_event()
         self.assertNotIn(0, env.active_tow_vehicles)
         self.assertIsNone(tractor.busy_aircraft_id)
 

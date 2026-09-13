@@ -399,13 +399,14 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - Fuel is continuous; personnel scheduling and random failures are disabled.
 - Sparse parking/runway interference preserves the Haitian physical
   relationships without copying incompatible 28-position indices.
-- Inspection is a fifth high-level action. RL uses 22 aircraft features,
-  20 global features, and observation schema version 5.
+- Inspection is a fifth high-level action. RL uses 23 aircraft features,
+  target/vehicle candidate features, 20 global features, and observation
+  schema version 9.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 39 unit tests pass. In the fixed seed-10007, 60-minute, 12-wave run,
+- All 44 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+  12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
-  97/113/118/106/118/119 launches. The result is stored in
-  `outputs/haitian_spacetime_60min_seed10007.csv`.
+  99/113/118/106/118/119 launches.
 - Every non-random baseline exceeds Random for this regression seed; CP-SAT is
   highest at 119. Treat this as a fixed-seed regression, not a statistical
   ranking.
@@ -421,6 +422,23 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   using these values as thesis results.
 - Current decision: retain as a structural experiment; do not merge into the
   base environment until the spatial assumptions are reviewed.
+
+### `experiment/rl-target-selection`
+
+- Adds the third masked decision level: parking spot, launch runway, or mobile
+  service vehicle, conditioned on operation type and aircraft.
+- Adds target/vehicle set encoding, shortest-processing-time and earliest
+  reachable-target priors, BC teachers, DAgger, and potential-based readiness
+  reward redistribution.
+- Fixes selected-runway deadline validation, wave accounting, and clearance
+  wake-up events before training.
+- Fixed `seed=10007`, 60-minute, 12-wave result: the final BC+PPO checkpoint
+  completes 120 launches versus CP-SAT at 119.
+- This one-launch advantage uses a constrained elite trajectory from the same
+  scenario and is evidence of representational capability, not multi-seed
+  generalization or statistical superiority.
+- Reproduction: `scripts/run_rl_target_experiment.sh`; details:
+  `doc/rl_target_selection_experiment.md`.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

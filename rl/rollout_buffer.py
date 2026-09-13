@@ -13,6 +13,9 @@ class RolloutBuffer:
     observations: List[EncodedObservation] = field(default_factory=list)
     high_actions: List[int] = field(default_factory=list)
     low_actions: List[int] = field(default_factory=list)
+    target_actions: List[int] = field(default_factory=list)
+    target_masks: List[List[int]] = field(default_factory=list)
+    target_aux: List[List[List[float]]] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
     dones: List[bool] = field(default_factory=list)
     values: List[float] = field(default_factory=list)
@@ -25,6 +28,9 @@ class RolloutBuffer:
         observation: EncodedObservation,
         high_action: int,
         low_action: int,
+        target_action: int,
+        target_mask: List[int],
+        target_aux: List[List[float]],
         reward: float,
         done: bool,
         value: float,
@@ -33,6 +39,11 @@ class RolloutBuffer:
         self.observations.append(observation)
         self.high_actions.append(high_action)
         self.low_actions.append(low_action)
+        self.target_actions.append(target_action)
+        self.target_masks.append(list(target_mask))
+        self.target_aux.append(
+            [list(features) for features in target_aux]
+        )
         self.rewards.append(float(reward))
         self.dones.append(bool(done))
         self.values.append(float(value))
@@ -45,6 +56,9 @@ class RolloutBuffer:
         self.observations.clear()
         self.high_actions.clear()
         self.low_actions.clear()
+        self.target_actions.clear()
+        self.target_masks.clear()
+        self.target_aux.clear()
         self.rewards.clear()
         self.dones.clear()
         self.values.clear()
@@ -64,4 +78,3 @@ class RolloutBuffer:
             self.advantages[index] = gae
             self.returns[index] = gae + self.values[index]
             next_value = self.values[index]
-
