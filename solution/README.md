@@ -45,7 +45,6 @@ choose_action() -> Optional[Dict[str, int]]
 | `spt` | `SPTSolver` | 经典派工规则 | 否 | 最短作业时间优先基线 |
 | `edd` | `EDDSolver` | 经典派工规则 | 否 | 最早波次截止时间优先基线 |
 | `heuristic` | `WaveHeuristicSolver` | 规则启发式 | 否 | 当前主要非学习基线 |
-| `sampled` | `SampledRandomSolver` | 随机采样规划 | 否 | 检验多次随机搜索能带来的提升 |
 | `cp_sat` | `CPSATSolver` | 滚动整数优化 | 否 | 优化当前批次的资源分配 |
 | `rl` | `RLSolver` | 神经网络策略 | 是 | 加载 PPO checkpoint 进行推理 |
 
@@ -129,38 +128,6 @@ slack 估计，无法系统搜索跨波次的长期资源分配。
 python -m scripts.solve --solver heuristic --runs 10
 ```
 
-## SampledRandomSolver
-
-文件：`solution/sampled_random_solver.py`
-
-该求解器在第一次决策时：
-
-1. 深拷贝当前环境；
-2. 在每个副本中运行一条完整的随机动作序列；
-3. 共采样 `samples` 条轨迹；
-4. 选择得分最高的完整轨迹；
-5. 在真实环境中依次重放该轨迹。
-
-当前评分顺序是：
-
-```text
-先增加 completed sorties
-再减少 missed sorties
-最后减少仿真完成时间
-```
-
-即源码中的 `(completed, -missed, -time)`，与项目最大化完成放飞架次的
-主目标一致。
-
-它不是逐步滚动规划，而是在起点一次性选定完整轨迹。采样数越大，计算
-量和内存消耗越高，而且效果仍受随机轨迹覆盖范围限制。
-
-运行：
-
-```bash
-python -m scripts.solve --solver sampled --sampled-samples 30
-```
-
 ## CPSATSolver
 
 文件：`solution/cp_sat_solver.py`
@@ -221,7 +188,6 @@ python -m scripts.solve \
 | 检查环境是否可运行 | `random` |
 | 对比经典派工规则 | `fifo`、`spt`、`edd` |
 | 获得快速、较强的规则基线 | `heuristic` |
-| 测试随机搜索上限 | `sampled` |
 | 测试滚动整数资源分配 | `cp_sat` |
 | 评估训练后的神经网络策略 | `rl` |
 

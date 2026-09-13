@@ -256,7 +256,6 @@ python -m scripts.solve --solver random
 python -m scripts.solve --solver fifo
 python -m scripts.solve --solver spt
 python -m scripts.solve --solver edd
-python -m scripts.solve --solver sampled --sampled-samples 30
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 

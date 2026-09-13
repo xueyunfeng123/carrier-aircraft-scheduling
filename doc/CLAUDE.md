@@ -194,7 +194,6 @@ evaluation scenarios.
 | `solution/random_solver.py` | Uniform random legal-action baseline |
 | `solution/priority_rule_solver.py` | FIFO, SPT, and EDD dispatching-rule baselines |
 | `solution/heuristic_solver.py` | Wave/deadline-aware slack heuristic |
-| `solution/sampled_random_solver.py` | Best-of-N complete random rollout planner |
 | `solution/cp_sat_solver.py` | Rolling CP-SAT resource-allocation baseline |
 | `solution/rl_solver.py` | Inference wrapper for a PyTorch checkpoint |
 | `solution/README.md` | Solver behavior, tradeoffs, and invocation guide |
@@ -274,7 +273,6 @@ python -m scripts.solve --solver random
 python -m scripts.solve --solver fifo
 python -m scripts.solve --solver spt
 python -m scripts.solve --solver edd
-python -m scripts.solve --solver sampled --sampled-samples 30
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
 
@@ -352,8 +350,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - The project-core parking-time rule is represented as an equivalent star
   graph, preserving the historical benchmark exactly.
 - Fixed `seed=10007`, 60-minute, 12-wave regression totals remain:
-  Random 141, FIFO 143, SPT 140, EDD 143, Heuristic 152, SampledRandom 144,
-  and CP-SAT 140.
+  Random 141, FIFO 143, SPT 140, EDD 143, Heuristic 152, and CP-SAT 140.
 - A 100-run eight-case study is stored in
   `outputs/yoon_2023_structural_replication.csv`. The 16-aircraft large-layout
   cases approach the published rates, while 20-aircraft cases remain much
@@ -372,7 +369,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - RL observation schema version changes from 1 to 2; old checkpoints are
   rejected and BC+PPO must be retrained.
 - Fixed `seed=10007`, 60-minute, 12-wave results are: Random 143, FIFO 152,
-  SPT 157, EDD 158, Heuristic 157, SampledRandom 143, and CP-SAT 162.
+  SPT 157, EDD 158, Heuristic 157, and CP-SAT 162.
 - Current decision: retain as the preferred interpretation of the supplied
   five-aircraft reserve requirement, pending review before merging.
 
@@ -406,8 +403,8 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   20 global features, and observation schema version 5.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
 - All 39 unit tests pass. In the fixed seed-10007, 60-minute, 12-wave run,
-  Random/FIFO/SPT/EDD/Heuristic/Sampled/CP-SAT complete
-  97/113/118/106/118/101/119 launches. The result is stored in
+  Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
+  97/113/118/106/118/119 launches. The result is stored in
   `outputs/haitian_spacetime_60min_seed10007.csv`.
 - Every non-random baseline exceeds Random for this regression seed; CP-SAT is
   highest at 119. Treat this as a fixed-seed regression, not a statistical
@@ -415,9 +412,9 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - Detailed assumptions and remaining work are in
   `doc/haitian_deck_environment_spec.md`.
 - Fixed `seed=10007`, 60-minute, 12-wave results with the graph enabled are:
-  Random 66, FIFO 74, SPT 90, EDD 53, Heuristic 93, SampledRandom 77, and
-  CP-SAT 86. The matched graph-disabled totals remain 143/152/157/158/157/
-  143/162. These values belong to the superseded single-pathway graph.
+  Random 66, FIFO 74, SPT 90, EDD 53, Heuristic 93, and CP-SAT 86. The
+  matched graph-disabled totals remain 143/152/157/158/157/162. These values
+  belong to the superseded single-pathway graph.
 - The large throughput reduction is evidence that the current atomic
   reservation assumption is restrictive, not evidence of real carrier
   capacity. Calibrate topology, edge times, and movement granularity before

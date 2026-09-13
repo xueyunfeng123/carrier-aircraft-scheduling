@@ -19,7 +19,7 @@ from scripts.evaluation_defaults import (
 from scripts.solve import run_episode
 
 
-NON_RL_SOLVERS = ("random", "fifo", "spt", "edd", "heuristic", "sampled", "cp_sat")
+NON_RL_SOLVERS = ("random", "fifo", "spt", "edd", "heuristic", "cp_sat")
 
 
 def main() -> None:
@@ -33,7 +33,6 @@ def main() -> None:
     parser.add_argument("--waves", type=int, default=DEFAULT_EVALUATION_WAVES)
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
-    parser.add_argument("--sampled-samples", type=int, default=30)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument(
         "--disable-spatial-graph",
@@ -67,9 +66,7 @@ def main() -> None:
 
         for solver_name in solver_names:
             options: Dict[str, Any] = {}
-            if solver_name == "sampled":
-                options["samples"] = args.sampled_samples
-            elif solver_name == "cp_sat":
+            if solver_name == "cp_sat":
                 options["max_time_seconds"] = args.cp_sat_max_time
             elif solver_name == "rl":
                 options = {

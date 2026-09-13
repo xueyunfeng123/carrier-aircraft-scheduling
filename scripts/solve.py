@@ -21,7 +21,6 @@ from solution import (
     RandomSolver,
     RLSolver,
     SPTSolver,
-    SampledRandomSolver,
     WaveHeuristicSolver,
 )
 
@@ -34,7 +33,6 @@ SOLVERS: Dict[str, Type] = {
     "random": RandomSolver,
     "rl": RLSolver,
     "spt": SPTSolver,
-    "sampled": SampledRandomSolver,
 }
 
 
@@ -51,8 +49,6 @@ def run_episode(
     solver_options = solver_options or {}
     if solver_name == "random":
         solver = solver_cls(env, seed=seed)
-    elif solver_name == "sampled":
-        solver = solver_cls(env, seed=seed, max_steps=max_steps, **solver_options)
     elif solver_name == "cp_sat":
         solver = solver_cls(env, **solver_options)
     elif solver_name == "rl":
@@ -221,7 +217,6 @@ def main() -> None:
     parser.add_argument("--timing-csv", type=str, default="")
     parser.add_argument("--missed-csv", type=str, default="")
     parser.add_argument("--event-log-csv", type=str, default="")
-    parser.add_argument("--sampled-samples", type=int, default=30)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
@@ -232,11 +227,7 @@ def main() -> None:
 
     config = build_config(args)
     solver_options = {}
-    if args.solver == "sampled":
-        solver_options = {
-            "samples": args.sampled_samples,
-        }
-    elif args.solver == "cp_sat":
+    if args.solver == "cp_sat":
         solver_options = {
             "max_time_seconds": args.cp_sat_max_time,
         }

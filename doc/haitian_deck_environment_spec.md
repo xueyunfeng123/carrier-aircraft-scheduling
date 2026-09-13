@@ -81,7 +81,7 @@
 - 连续燃油加入后，单机观测由 21 维增至 22 维。
 - 全局观测由 19 维增至 20 维。
 - observation schema 升级为 5，旧 checkpoint 必须重新训练。
-- Heuristic、FIFO、SPT、EDD、Random、SampledRandom 和 CP-SAT 均已适配。
+- Heuristic、FIFO、SPT、EDD、Random 和 CP-SAT 均已适配。
 - 当前 RL 网络仍只学习“作业类型 + 飞机”，执行时由环境按最早可达规则
   补全停机位、跑道或车辆；学习目标选择头属于后续工作。
 
@@ -97,11 +97,10 @@
 | SPT | 118 | 0.4917 |
 | EDD | 106 | 0.4417 |
 | Heuristic | 118 | 0.4917 |
-| SampledRandom | 101 | 0.4208 |
 | CP-SAT | 119 | 0.4958 |
 
-结果保存于 `outputs/haitian_spacetime_60min_seed10007.csv`。七种非 RL
-基线均可完成事件闭环，且该固定种子下六种非随机基线全部超过 Random；
+结果保存于 `outputs/haitian_spacetime_60min_seed10007.csv`。六种非 RL
+基线均可完成事件闭环，且该固定种子下五种非随机基线全部超过 Random；
 CP-SAT 比 Random 多完成22架次。该结果仅用于回归和基线可运行性验证，
 正式算法优劣仍需多种子统计。
 
