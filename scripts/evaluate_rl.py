@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import statistics
+from pathlib import Path
 
 from env.config import DEFAULT_CONFIG
 from scripts.evaluation_defaults import (
@@ -20,8 +22,12 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=str, default="checkpoints/rl_policy.pt")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--stochastic", action="store_true")
+    parser.add_argument("--low-rank-prior", type=float)
+    parser.add_argument("--target-rank-prior", type=float)
+    parser.add_argument("--disable-low-rank-prior", action="store_true")
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
+    parser.add_argument("--output", type=str, default="")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
     parser.add_argument(
@@ -52,6 +58,9 @@ def main() -> None:
                 "checkpoint": args.checkpoint,
                 "device": args.device,
                 "deterministic": not args.stochastic,
+                "low_rank_prior": args.low_rank_prior,
+                "target_rank_prior": args.target_rank_prior,
+                "disable_low_rank_prior": args.disable_low_rank_prior,
             },
         )
         for run_id in range(args.runs)
@@ -68,6 +77,32 @@ def main() -> None:
         )
     print(f"mean_total_sorties_completed: {statistics.mean(r['total_sorties_completed'] for r in results):.2f}")
     print(f"mean_total_missed_sorties: {statistics.mean(r['total_missed_sorties'] for r in results):.2f}")
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {
+                "run": run_id,
+                "seed": result["seed"],
+                "total_sorties_completed": result[
+                    "total_sorties_completed"
+                ],
+                "total_missed_sorties": result[
+                    "total_missed_sorties"
+                ],
+                "total_reward": result["total_reward"],
+            }
+            for run_id, result in enumerate(results, start=1)
+        ]
+        with output.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=list(rows[0]),
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"evaluation_csv_written: {output}")
 
 
 if __name__ == "__main__":

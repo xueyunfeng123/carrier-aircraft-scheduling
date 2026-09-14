@@ -7,6 +7,7 @@ export PYTHONPATH="${PYTHONPATH:-.}"
 "$PYTHON_BIN" -m scripts.train_rl \
   --seed 10007 \
   --eval-seed 10007 \
+  --allow-seed-overlap \
   --checkpoint checkpoints/rl_target_elite_overfit.pt \
   --hidden-dim 384 \
   --aircraft-embed-dim 192 \
@@ -24,6 +25,7 @@ export PYTHONPATH="${PYTHONPATH:-.}"
 "$PYTHON_BIN" -m scripts.train_rl \
   --seed 10007 \
   --eval-seed 10007 \
+  --allow-seed-overlap \
   --checkpoint checkpoints/rl_target_elite_dagger.pt \
   --init-checkpoint checkpoints/rl_target_elite_overfit.pt \
   --hidden-dim 384 \
@@ -45,6 +47,7 @@ export PYTHONPATH="${PYTHONPATH:-.}"
 "$PYTHON_BIN" -m scripts.train_rl \
   --seed 10007 \
   --eval-seed 10007 \
+  --allow-seed-overlap \
   --checkpoint checkpoints/rl_target_bc_ppo_120.pt \
   --init-checkpoint checkpoints/rl_target_elite_dagger.pt \
   --hidden-dim 384 \

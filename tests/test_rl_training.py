@@ -22,7 +22,16 @@ from rl.obs_encoder import (
 )
 from rl.ppo_trainer import PPOTrainer
 from rl.train_config import PPOConfig
-from scripts.train_rl import collect_rollout
+from scripts.train_rl import (
+    EpisodeSeedScheduler,
+    build_ppo_optimizer,
+    collect_rollout,
+    resolve_training_seeds,
+    resolve_validation_seeds,
+    select_dagger_seeds,
+    validate_seed_partition,
+)
+from solution.rl_solver import RLSolver
 
 
 class FixedLaunchTrainer:
@@ -96,6 +105,55 @@ class RolloutCollectionTest(unittest.TestCase):
         )
 
         self.assertEqual(buffer.rewards, [1.0])
+
+
+class TrainingSeedProtocolTest(unittest.TestCase):
+    def test_explicit_seed_sets_are_deduplicated_in_order(self) -> None:
+        self.assertEqual(
+            resolve_training_seeds(7, 5, [11, 12, 11]),
+            [11, 12],
+        )
+        self.assertEqual(
+            resolve_validation_seeds(10007, 5, [21, 22, 21]),
+            [21, 22],
+        )
+
+    def test_training_and_validation_seeds_must_be_disjoint(self) -> None:
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            validate_seed_partition([7, 8], [8, 9])
+        validate_seed_partition([7, 8], [8, 9], allow_overlap=True)
+
+    def test_dagger_samples_only_from_training_partition(self) -> None:
+        self.assertEqual(
+            select_dagger_seeds([10, 20, 30], iteration=1, episodes=4),
+            [20, 30, 10, 20],
+        )
+
+    def test_episode_seed_scheduler_cycles_training_partition(self) -> None:
+        scheduler = EpisodeSeedScheduler([10, 20, 30])
+
+        self.assertEqual(
+            [scheduler.next_seed() for _ in range(5)],
+            [10, 20, 30, 10, 20],
+        )
+
+    def test_adaptive_rank_gate_can_use_a_separate_learning_rate(self) -> None:
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            adaptive_low_rank_prior=True,
+        )
+
+        optimizer = build_ppo_optimizer(
+            model,
+            learning_rate=1.0e-5,
+            rank_gate_learning_rate=1.0e-3,
+        )
+
+        self.assertEqual(
+            [group["lr"] for group in optimizer.param_groups],
+            [1.0e-5, 1.0e-3],
+        )
 
 
 class PolicyNetworkTest(unittest.TestCase):
@@ -226,6 +284,57 @@ class PolicyNetworkTest(unittest.TestCase):
         )
 
         self.assertEqual(tuple(low_logits.shape), (2, 40))
+
+    def test_rank_prior_strengths_are_checkpointed(self) -> None:
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            low_rank_prior=1.5,
+            target_rank_prior=0.5,
+            adaptive_low_rank_prior=True,
+        )
+
+        config = model.checkpoint_config()
+
+        self.assertEqual(config["low_rank_prior"], 1.5)
+        self.assertEqual(config["target_rank_prior"], 0.5)
+        self.assertTrue(config["adaptive_low_rank_prior"])
+
+    def test_adaptive_rank_gate_starts_from_configured_prior(self) -> None:
+        import torch
+
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            low_rank_prior=2.5,
+            adaptive_low_rank_prior=True,
+        )
+
+        self.assertTrue(
+            torch.equal(
+                model.low_rank_gate.weight,
+                torch.zeros_like(model.low_rank_gate.weight),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                model.low_rank_gate.bias,
+                torch.full_like(model.low_rank_gate.bias, 2.5),
+            )
+        )
+
+    def test_solver_can_override_rank_priors_for_ablation(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        solver = RLSolver(
+            env,
+            low_rank_prior=0.0,
+            target_rank_prior=0.0,
+            disable_low_rank_prior=True,
+        )
+
+        self.assertEqual(solver.model.low_rank_prior, 0.0)
+        self.assertEqual(solver.model.target_rank_prior, 0.0)
+        self.assertEqual(solver.model.low_rank_prior_scale, 0.0)
 
 
 class BehaviorCloningTest(unittest.TestCase):

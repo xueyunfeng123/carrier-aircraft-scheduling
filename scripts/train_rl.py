@@ -6,7 +6,7 @@ import argparse
 import copy
 import random
 import statistics
-from typing import Dict
+from typing import Dict, List, Optional, Sequence, Union
 
 try:
     import torch
@@ -50,6 +50,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=DEFAULT_TRAINING_SEED)
     parser.add_argument("--eval-seed", type=int, default=DEFAULT_EVALUATION_SEED)
+    parser.add_argument("--train-seeds", type=int, nargs="+")
+    parser.add_argument("--validation-seeds", type=int, nargs="+")
+    parser.add_argument(
+        "--allow-seed-overlap",
+        action="store_true",
+        help="allow training and validation seeds to overlap for legacy overfit experiments",
+    )
     parser.add_argument("--num-aircraft", type=int, default=DEFAULT_CONFIG["num_aircraft"])
     parser.add_argument(
         "--wave-size",
@@ -74,6 +81,12 @@ def main() -> None:
     parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=3.0e-4)
+    parser.add_argument(
+        "--rank-gate-learning-rate",
+        type=float,
+        default=None,
+        help="optional separate PPO learning rate for the adaptive rank gate",
+    )
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--gae-lambda", type=float, default=0.98)
     parser.add_argument("--clip-ratio", type=float, default=0.2)
@@ -82,6 +95,13 @@ def main() -> None:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--aircraft-embed-dim", type=int, default=64)
     parser.add_argument("--target-embed-dim", type=int, default=64)
+    parser.add_argument("--low-rank-prior", type=float, default=4.0)
+    parser.add_argument("--target-rank-prior", type=float, default=4.0)
+    parser.add_argument(
+        "--adaptive-low-rank-prior",
+        action="store_true",
+        help="learn state- and action-dependent weights for the aircraft rank feature",
+    )
     parser.add_argument("--bc-episodes", type=int, default=5)
     parser.add_argument(
         "--bc-teacher",
@@ -106,6 +126,21 @@ def main() -> None:
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
+    training_seeds = resolve_training_seeds(
+        args.seed,
+        args.bc_episodes,
+        args.train_seeds,
+    )
+    validation_seeds = resolve_validation_seeds(
+        args.eval_seed,
+        args.eval_runs,
+        args.validation_seeds,
+    )
+    validate_seed_partition(
+        training_seeds,
+        validation_seeds,
+        allow_overlap=args.allow_seed_overlap,
+    )
     config = build_config(args)
     ppo_config = PPOConfig(
         rollout_steps=args.rollout_steps,
@@ -127,7 +162,8 @@ def main() -> None:
     )
 
     env = CarrierAircraftSchedulingEnv(config)
-    env.reset(seed=args.seed)
+    rollout_seeds = EpisodeSeedScheduler(training_seeds)
+    env.reset(seed=rollout_seeds.next_seed())
     model = CarrierPolicyValueNet(
         AIRCRAFT_FEATURE_DIM,
         GLOBAL_FEATURE_DIM,
@@ -137,6 +173,9 @@ def main() -> None:
             TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
         ),
         target_embed_dim=args.target_embed_dim,
+        low_rank_prior=args.low_rank_prior,
+        target_rank_prior=args.target_rank_prior,
+        adaptive_low_rank_prior=args.adaptive_low_rank_prior,
     ).to(args.device)
     if args.init_checkpoint:
         initial_payload = load_checkpoint(
@@ -151,17 +190,34 @@ def main() -> None:
             raise ValueError(
                 "initial RL checkpoint observation schema is incompatible"
             )
-        model.load_state_dict(initial_payload["model_state"])
+        incompatible = model.load_state_dict(
+            initial_payload["model_state"],
+            strict=False,
+        )
+        allowed_missing = (
+            {"low_rank_gate.weight", "low_rank_gate.bias"}
+            if args.adaptive_low_rank_prior
+            and not initial_payload.get("model_config", {}).get(
+                "adaptive_low_rank_prior",
+                False,
+            )
+            else set()
+        )
+        if (
+            set(incompatible.missing_keys) != allowed_missing
+            or incompatible.unexpected_keys
+        ):
+            raise ValueError(
+                "initial checkpoint model architecture is incompatible: "
+                f"missing={incompatible.missing_keys}, "
+                f"unexpected={incompatible.unexpected_keys}"
+            )
 
     bc_stats = None
     if args.bc_episodes > 0 and args.bc_epochs > 0:
-        demonstration_seeds = [
-            args.seed + run_id
-            for run_id in range(args.bc_episodes)
-        ]
         demonstrations = collect_heuristic_demonstrations(
             config,
-            demonstration_seeds,
+            training_seeds,
             teacher=args.bc_teacher,
         )
         bc_optimizer = torch.optim.Adam(
@@ -182,12 +238,11 @@ def main() -> None:
             dagger_demonstrations = collect_dagger_demonstrations(
                 model,
                 config,
-                [
-                    args.eval_seed
-                    + dagger_iteration * args.dagger_episodes
-                    + run_id
-                    for run_id in range(args.dagger_episodes)
-                ],
+                select_dagger_seeds(
+                    training_seeds,
+                    dagger_iteration,
+                    args.dagger_episodes,
+                ),
                 args.device,
                 args.bc_teacher,
                 ppo_config,
@@ -225,9 +280,17 @@ def main() -> None:
         )
         del demonstrations, bc_optimizer
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = build_ppo_optimizer(
+        model,
+        args.learning_rate,
+        args.rank_gate_learning_rate,
+    )
     trainer = PPOTrainer(model, optimizer, ppo_config, device=args.device)
-    best_score = (float("-inf"), float("-inf"))
+    best_score = (
+        float("-inf"),
+        float("-inf"),
+        float("-inf"),
+    )
     best_model_state = None
     best_optimizer_state = None
     best_update = -1
@@ -238,11 +301,14 @@ def main() -> None:
             "update": update,
             "best_update": best_update,
             "updates_completed": updates_completed,
-            "eval_seed": args.eval_seed,
+            "eval_seed": validation_seeds[0],
+            "training_seeds": training_seeds,
+            "validation_seeds": validation_seeds,
             "init_checkpoint": args.init_checkpoint,
             "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
             "env_config": config,
             "ppo_config": ppo_config.__dict__,
+            "rank_gate_learning_rate": args.rank_gate_learning_rate,
             "behavior_cloning": {
                 "episodes": args.bc_episodes,
                 "teacher": args.bc_teacher,
@@ -269,11 +335,14 @@ def main() -> None:
         eval_stats = evaluate_policy(
             config,
             args.checkpoint,
-            args.eval_seed,
-            args.eval_runs,
+            validation_seeds,
             args.device,
         )
-        score = (eval_stats["completed"], -eval_stats["missed"])
+        score = (
+            eval_stats["completed"],
+            eval_stats["worst_completed"],
+            -eval_stats["missed"],
+        )
         if score > best_score:
             best_score = score
             best_update = update
@@ -281,16 +350,23 @@ def main() -> None:
             best_optimizer_state = copy.deepcopy(optimizer.state_dict())
         return eval_stats
 
-    if bc_stats is not None:
+    if bc_stats is not None or args.init_checkpoint:
         eval_stats = evaluate_and_track(0)
         print(
-            "bc_eval,"
+            "initial_eval,"
             f"completed,{eval_stats['completed']:.2f},"
+            f"std,{eval_stats['completed_std']:.2f},"
+            f"worst_completed,{eval_stats['worst_completed']:.2f},"
             f"missed,{eval_stats['missed']:.2f}"
         )
 
     for update in range(1, args.total_updates + 1):
-        buffer = collect_rollout(env, trainer, ppo_config, args.seed + update)
+        buffer = collect_rollout(
+            env,
+            trainer,
+            ppo_config,
+            rollout_seeds,
+        )
         last_value = estimate_value(model, env, args.device)
         buffer.compute_gae(last_value, ppo_config.gamma, ppo_config.gae_lambda)
         stats = trainer.update(buffer)
@@ -310,11 +386,11 @@ def main() -> None:
                 f"value_loss,{stats['value_loss']:.6f},"
                 f"entropy,{stats['entropy']:.6f},"
                 f"eval_completed,{eval_stats['completed']:.2f},"
+                f"eval_worst_completed,{eval_stats['worst_completed']:.2f},"
                 f"eval_missed,{eval_stats['missed']:.2f}"
             )
 
     if best_model_state is not None:
-        model.load_state_dict(best_model_state)
         optimizer.load_state_dict(best_optimizer_state)
         save_checkpoint(
             args.checkpoint,
@@ -326,19 +402,133 @@ def main() -> None:
             "best,"
             f"update,{best_update},"
             f"eval_completed,{best_score[0]:.2f},"
-            f"eval_missed,{-best_score[1]:.2f}"
+            f"eval_worst_completed,{best_score[1]:.2f},"
+            f"eval_missed,{-best_score[2]:.2f}"
         )
+
+
+def resolve_training_seeds(
+    seed: int,
+    bc_episodes: int,
+    explicit_seeds: Optional[Sequence[int]],
+) -> List[int]:
+    if explicit_seeds:
+        return list(dict.fromkeys(int(value) for value in explicit_seeds))
+    return [
+        int(seed) + run_id
+        for run_id in range(max(1, int(bc_episodes)))
+    ]
+
+
+def resolve_validation_seeds(
+    eval_seed: int,
+    eval_runs: int,
+    explicit_seeds: Optional[Sequence[int]],
+) -> List[int]:
+    if explicit_seeds:
+        return list(dict.fromkeys(int(value) for value in explicit_seeds))
+    return [
+        int(eval_seed) + run_id
+        for run_id in range(max(1, int(eval_runs)))
+    ]
+
+
+def validate_seed_partition(
+    training_seeds: Sequence[int],
+    validation_seeds: Sequence[int],
+    allow_overlap: bool = False,
+) -> None:
+    overlap = sorted(set(training_seeds) & set(validation_seeds))
+    if overlap and not allow_overlap:
+        raise ValueError(
+            "training and validation seeds overlap: "
+            f"{overlap}; use --allow-seed-overlap only for legacy overfit runs"
+        )
+
+
+def select_dagger_seeds(
+    training_seeds: Sequence[int],
+    iteration: int,
+    episodes: int,
+) -> List[int]:
+    return [
+        int(training_seeds[
+            (iteration * episodes + run_id) % len(training_seeds)
+        ])
+        for run_id in range(episodes)
+    ]
+
+
+class EpisodeSeedScheduler:
+    def __init__(self, seeds: Sequence[int]):
+        if not seeds:
+            raise ValueError("at least one training seed is required")
+        self.seeds = [int(seed) for seed in seeds]
+        self.index = 0
+
+    def next_seed(self) -> int:
+        seed = self.seeds[self.index % len(self.seeds)]
+        self.index += 1
+        return seed
+
+
+def build_ppo_optimizer(
+    model,
+    learning_rate: float,
+    rank_gate_learning_rate: Optional[float] = None,
+):
+    if (
+        rank_gate_learning_rate is None
+        or not getattr(model, "adaptive_low_rank_prior", False)
+    ):
+        return torch.optim.Adam(
+            model.parameters(),
+            lr=learning_rate,
+        )
+
+    gate_parameters = list(model.low_rank_gate.parameters())
+    gate_parameter_ids = {
+        id(parameter)
+        for parameter in gate_parameters
+    }
+    base_parameters = [
+        parameter
+        for parameter in model.parameters()
+        if id(parameter) not in gate_parameter_ids
+    ]
+    return torch.optim.Adam(
+        [
+            {
+                "params": base_parameters,
+                "lr": learning_rate,
+            },
+            {
+                "params": gate_parameters,
+                "lr": rank_gate_learning_rate,
+            },
+        ]
+    )
 
 
 def collect_rollout(
     env: CarrierAircraftSchedulingEnv,
     trainer: PPOTrainer,
     config: PPOConfig,
-    seed: int,
+    seed: Union[int, EpisodeSeedScheduler],
 ) -> RolloutBuffer:
     buffer = RolloutBuffer()
+    episode_index = 0
+
+    def next_seed() -> int:
+        nonlocal episode_index
+        if isinstance(seed, EpisodeSeedScheduler):
+            return seed.next_seed()
+        selected = int(seed) + episode_index
+        episode_index += 1
+        return selected
+
     if env.done:
-        env.reset(seed=seed)
+        env.reset(seed=next_seed())
 
     actions_in_episode = 0
     while len(buffer) < config.rollout_steps:
@@ -350,7 +540,7 @@ def collect_rollout(
                     raise RuntimeError(
                         "episode ended without any legal scheduling action"
                     )
-                env.reset(seed=seed + len(buffer))
+                env.reset(seed=next_seed())
                 actions_in_episode = 0
             continue
 
@@ -381,7 +571,7 @@ def collect_rollout(
             log_prob,
         )
         if done:
-            env.reset(seed=seed + len(buffer))
+            env.reset(seed=next_seed())
             actions_in_episode = 0
     return buffer
 
@@ -494,12 +684,17 @@ def estimate_value(model, env: CarrierAircraftSchedulingEnv, device: str) -> flo
     return float(value.item())
 
 
-def evaluate_policy(config: Dict, checkpoint: str, seed: int, runs: int, device: str) -> Dict[str, float]:
+def evaluate_policy(
+    config: Dict,
+    checkpoint: str,
+    seeds: Sequence[int],
+    device: str,
+) -> Dict[str, float]:
     results = [
         run_episode(
             "rl",
             config,
-            seed=seed + run_id,
+            seed=seed,
             max_steps=100000,
             solver_options={
                 "checkpoint": checkpoint,
@@ -507,10 +702,20 @@ def evaluate_policy(config: Dict, checkpoint: str, seed: int, runs: int, device:
                 "deterministic": True,
             },
         )
-        for run_id in range(runs)
+        for seed in seeds
+    ]
+    completed = [
+        item["total_sorties_completed"]
+        for item in results
     ]
     return {
-        "completed": statistics.mean(item["total_sorties_completed"] for item in results),
+        "completed": statistics.mean(completed),
+        "completed_std": (
+            statistics.stdev(completed)
+            if len(completed) > 1
+            else 0.0
+        ),
+        "worst_completed": min(completed),
         "missed": statistics.mean(item["total_missed_sorties"] for item in results),
     }
 

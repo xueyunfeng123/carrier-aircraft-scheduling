@@ -28,6 +28,9 @@ class RLSolver:
         hidden_dim: int = 128,
         aircraft_embed_dim: int = 64,
         target_embed_dim: int = 64,
+        low_rank_prior: Optional[float] = None,
+        target_rank_prior: Optional[float] = None,
+        disable_low_rank_prior: bool = False,
     ):
         try:
             import torch
@@ -72,10 +75,16 @@ class RLSolver:
             model_config.update(checkpoint_model_config)
             if "action_conditioned_low_head" not in checkpoint_model_config:
                 model_config["action_conditioned_low_head"] = False
+        if low_rank_prior is not None:
+            model_config["low_rank_prior"] = float(low_rank_prior)
+        if target_rank_prior is not None:
+            model_config["target_rank_prior"] = float(target_rank_prior)
 
         self.model = CarrierPolicyValueNet(**model_config).to(device)
         if checkpoint_payload is not None:
             self.model.load_state_dict(checkpoint_payload["model_state"])
+        if disable_low_rank_prior:
+            self.model.low_rank_prior_scale = 0.0
         self.model.eval()
 
         # Reuse action selection code without an optimizer during inference.

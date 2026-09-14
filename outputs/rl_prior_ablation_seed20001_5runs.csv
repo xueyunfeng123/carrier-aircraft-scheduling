@@ -1,0 +1,13 @@
+method,low_rank_prior,target_rank_prior,adaptive_gate,runs,seed_start,mean_sorties,std_sorties,run_sorties
+cp_sat,,,false,5,20001,119.6,0.5477,
+elite_cp_teacher,,,false,5,20001,120.0,0.7071,120;120;120;119;121
+rl_fixed_prior,4,4,false,5,20001,120.0,0.7071,120;119;120;120;121
+rl_aircraft_prior_only,4,0,false,5,20001,120.0,0.7071,120;119;120;120;121
+rl_low_prior_3,3,0,false,5,20001,119.4,0.5477,119;120;119;120;119
+rl_low_prior_2,2,0,false,5,20001,119.2,0.4472,119;119;119;120;119
+rl_low_prior_1,1,0,false,5,20001,117.2,1.3038,116;118;116;117;119
+rl_no_prior,0,0,false,5,20001,113.2,1.9235,113;116;114;111;112
+rl_learned_gate_bc100,learned,0,true,5,20001,119.8,0.4472,119;120;120;120;120
+rl_learned_gate_disabled,disabled,0,true,5,20001,111.4,0.8944,112;110;112;111;112
+rl_learned_gate_ppo,learned,0,true,5,20001,119.8,0.4472,120;120;119;120;120
+rl_learned_gate_ppo_disabled,disabled,0,true,5,20001,112.0,1.7321,113;109;112;113;113

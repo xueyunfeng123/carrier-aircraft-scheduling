@@ -37,6 +37,7 @@ class CarrierPolicyValueNet(nn.Module):
         target_embed_dim: int = 64,
         target_rank_prior: float = 4.0,
         low_rank_prior: float = 4.0,
+        adaptive_low_rank_prior: bool = False,
         action_conditioned_low_head: bool = True,
         num_high_actions: int = 5,
     ):
@@ -49,6 +50,8 @@ class CarrierPolicyValueNet(nn.Module):
         self.target_embed_dim = target_embed_dim
         self.target_rank_prior = float(target_rank_prior)
         self.low_rank_prior = float(low_rank_prior)
+        self.low_rank_prior_scale = 1.0
+        self.adaptive_low_rank_prior = adaptive_low_rank_prior
         self.action_conditioned_low_head = action_conditioned_low_head
         self.num_high_actions = num_high_actions
 
@@ -79,6 +82,13 @@ class CarrierPolicyValueNet(nn.Module):
         self.low_context = nn.Linear(hidden_dim, aircraft_embed_dim)
         low_output_dim = num_high_actions if action_conditioned_low_head else 1
         self.low_head = nn.Linear(aircraft_embed_dim * 2, low_output_dim)
+        if adaptive_low_rank_prior:
+            self.low_rank_gate = nn.Linear(hidden_dim, num_high_actions)
+            nn.init.zeros_(self.low_rank_gate.weight)
+            nn.init.constant_(
+                self.low_rank_gate.bias,
+                self.low_rank_prior,
+            )
         self.high_action_embedding = nn.Embedding(
             num_high_actions,
             aircraft_embed_dim,
@@ -139,9 +149,16 @@ class CarrierPolicyValueNet(nn.Module):
         if self.action_conditioned_low_head:
             low_logits = low_logits.transpose(1, 2)
             if low_aux is not None:
+                rank_weight = self.low_rank_prior
+                if self.adaptive_low_rank_prior:
+                    rank_weight = self.low_rank_gate(
+                        context
+                    ).unsqueeze(-1)
                 low_logits = (
                     low_logits
-                    + self.low_rank_prior * low_aux[..., 1]
+                    + self.low_rank_prior_scale
+                    * rank_weight
+                    * low_aux[..., 1]
                 )
         else:
             low_logits = low_logits.squeeze(-1)
@@ -219,6 +236,7 @@ class CarrierPolicyValueNet(nn.Module):
             "target_embed_dim": self.target_embed_dim,
             "target_rank_prior": self.target_rank_prior,
             "low_rank_prior": self.low_rank_prior,
+            "adaptive_low_rank_prior": self.adaptive_low_rank_prior,
             "action_conditioned_low_head": self.action_conditioned_low_head,
             "num_high_actions": self.num_high_actions,
         }

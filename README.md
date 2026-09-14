@@ -269,6 +269,9 @@ python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 # 复现三层目标选择 BC+PPO 实验
 ./scripts/run_rl_target_experiment.sh
 
+# 复现训练/验证/测试隔离的学习式先验实验
+./scripts/run_rl_generalization_experiment.sh
+
 # 旧版随机策略明细输出
 python -m scripts.random_policy_test
 
@@ -286,8 +289,19 @@ python -m scripts.benchmark_non_rl \
 
 RL 策略采用“作业类型→飞机→目标停机位/跑道/车辆”的三层 masked
 动作。默认训练从 5 个训练 seed 收集 Heuristic 示范并进行行为克隆，再
-使用 PPO 微调。训练过程按固定评估 seed 保存最佳 checkpoint，避免后续
-更新覆盖更好的策略。纯 PPO 对照可通过 `--bc-episodes 0` 运行。
+使用 PPO 微调。正式实验可通过 `--train-seeds` 和 `--validation-seeds`
+显式隔离训练与验证场景；训练器按验证集平均值和最差值保存最佳
+checkpoint。纯 PPO 对照可通过 `--bc-episodes 0` 运行。
+
+飞机 SPT 排序和目标最早可达排序的强度可通过 `--low-rank-prior` 与
+`--target-rank-prior` 消融。`--adaptive-low-rank-prior` 将固定飞机排序
+权重替换为按状态和作业类型学习的门控，详细结果见
+`doc/rl_generalization_iteration.md`。
+
+冻结测试 `seed=40001-40020` 上，学习门控 BC+PPO、固定先验 RL 和
+CP-SAT 的平均完成架次分别为 120.20、119.75 和 119.50。学习门控策略
+相对 CP-SAT 为 14 胜、5 平、1 负。`elite_cp` 教师均值为 119.80；
+学习策略均值更高，但该差异尚未达到显著水平。
 
 共享机队将飞机特征从永久 A/B 标记改为初始备用角色，并将全局特征改为
 波次填充率和待回收压力；空间图进一步加入目标/车辆集合、候选排序先验

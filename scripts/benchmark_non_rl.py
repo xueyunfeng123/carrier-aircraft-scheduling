@@ -35,6 +35,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument(
+        "--solvers",
+        nargs="+",
+        choices=NON_RL_SOLVERS,
+        default=list(NON_RL_SOLVERS),
+    )
+    parser.add_argument(
         "--disable-spatial-graph",
         action="store_true",
         help="run the matched control without deck routes or movement time",
@@ -42,17 +48,26 @@ def main() -> None:
     parser.add_argument("--rl-checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-label", type=str, default="rl")
+    parser.add_argument("--rl-low-rank-prior", type=float)
+    parser.add_argument("--rl-target-rank-prior", type=float)
+    parser.add_argument("--rl-disable-low-rank-prior", action="store_true")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
+    parser.add_argument(
+        "--detail-output",
+        default="",
+        help="optional per-solver, per-seed CSV for paired statistical analysis",
+    )
     args = parser.parse_args()
 
-    solver_names = NON_RL_SOLVERS
+    solver_names = tuple(args.solvers)
     if args.rl_checkpoint:
         if not Path(args.rl_checkpoint).is_file():
             parser.error(f"RL checkpoint does not exist: {args.rl_checkpoint}")
         solver_names += ("rl",)
 
     rows: List[Dict[str, Any]] = []
+    detail_rows: List[Dict[str, Any]] = []
     print(
         "solver,interval,waves,mean_total,std_total,mean_per_wave,"
         "completion_rate,mean_worst_wave,mean_missed,mean_runtime_s"
@@ -73,6 +88,11 @@ def main() -> None:
                     "checkpoint": args.rl_checkpoint,
                     "device": args.rl_device,
                     "deterministic": True,
+                    "low_rank_prior": args.rl_low_rank_prior,
+                    "target_rank_prior": args.rl_target_rank_prior,
+                    "disable_low_rank_prior": (
+                        args.rl_disable_low_rank_prior
+                    ),
                 }
 
             totals: List[int] = []
@@ -108,6 +128,30 @@ def main() -> None:
                 missed.append(result["total_missed_sorties"])
                 worst_waves.append(min(wave_counts))
                 wave_runs.append(wave_counts)
+                detail_rows.append(
+                    {
+                        "solver": (
+                            args.rl_label
+                            if solver_name == "rl"
+                            else solver_name
+                        ),
+                        "seed": args.seed + run_id,
+                        "wave_interval": float(interval),
+                        "waves": args.waves,
+                        "total_sorties_completed": result[
+                            "total_sorties_completed"
+                        ],
+                        "total_missed_sorties": result[
+                            "total_missed_sorties"
+                        ],
+                        "worst_wave": min(wave_counts),
+                        "runtime_seconds": runtimes[-1],
+                        "wave_sorties": ";".join(
+                            str(value)
+                            for value in wave_counts
+                        ),
+                    }
+                )
 
             wave_means = [
                 statistics.mean(values)
@@ -155,6 +199,18 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
     print(f"benchmark_csv_written: {output}")
+    if args.detail_output:
+        detail_output = Path(args.detail_output)
+        detail_output.parent.mkdir(parents=True, exist_ok=True)
+        with detail_output.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(
+                file,
+                fieldnames=list(detail_rows[0]),
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            writer.writerows(detail_rows)
+        print(f"benchmark_detail_csv_written: {detail_output}")
 
 
 if __name__ == "__main__":

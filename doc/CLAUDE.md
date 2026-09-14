@@ -403,7 +403,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   target/vehicle candidate features, 20 global features, and observation
   schema version 9.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 44 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+- All 52 unit tests pass. In the corrected fixed seed-10007, 60-minute,
   12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
   99/113/118/106/118/119 launches.
@@ -439,6 +439,17 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   generalization or statistical superiority.
 - Reproduction: `scripts/run_rl_target_experiment.sh`; details:
   `doc/rl_target_selection_experiment.md`.
+- Follow-up work replaces the fixed aircraft-rank coefficient with a
+  state- and operation-conditioned learned gate. Training, validation, and
+  frozen-test seeds are disjoint.
+- On frozen seeds `40001-40020`, learned-gate BC+PPO averages 120.20 launches,
+  versus 119.75 for fixed-prior RL and 119.50 for CP-SAT. The paired learned
+  policy versus CP-SAT comparison is 14 wins, 5 ties, and 1 loss.
+- The `elite_cp` teacher averages 119.80 on the same seeds. Learned-gate RL is
+  higher by 0.40 on average but the paired sign test is not significant
+  (`p=0.146`); do not claim that the policy has surpassed its teacher.
+- Reproduction: `scripts/run_rl_generalization_experiment.sh`; details:
+  `doc/rl_generalization_iteration.md`.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or
@@ -449,8 +460,9 @@ a clearly documented physical assumption.
 - Preserve the single business objective: maximize completed launches within
   the fixed horizon.
 - Keep optimization metrics separate from solver-specific training rewards.
-- Default RL training uses heuristic behavior cloning followed by PPO and saves
-  the best fixed-seed checkpoint. Label it `rl_bc_ppo`, not pure PPO.
+- Default RL training uses heuristic behavior cloning followed by PPO. Formal
+  experiments must use disjoint `--train-seeds` and `--validation-seeds` and
+  label the result `rl_bc_ppo`, not pure PPO.
 - Pure PPO experiments must pass `--bc-episodes 0` and be reported separately.
 - Do not add a requirement merely because it appears in `doc/前置约束.md`;
   first resolve its ambiguity and update the mathematical model.

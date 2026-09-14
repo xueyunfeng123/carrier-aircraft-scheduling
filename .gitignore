@@ -23,6 +23,7 @@ checkpoints/
 !checkpoints/
 checkpoints/*
 !checkpoints/rl_target_bc_ppo_120.pt
+!checkpoints/rl_learned_prior_ppo.pt
 
 runs.csv
 timing.csv
