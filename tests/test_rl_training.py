@@ -25,8 +25,11 @@ from rl.ppo_trainer import PPOTrainer
 from rl.train_config import PPOConfig
 from scripts.train_rl import (
     EpisodeSeedScheduler,
+    average_rollout_stats,
+    build_interval_configs,
     build_ppo_optimizer,
     collect_rollout,
+    format_interval_scores,
     resolve_training_seeds,
     resolve_validation_seeds,
     self_imitation_parameters,
@@ -110,6 +113,54 @@ class RolloutCollectionTest(unittest.TestCase):
 
 
 class TrainingSeedProtocolTest(unittest.TestCase):
+    def test_interval_configs_preserve_wave_count(self) -> None:
+        configs = build_interval_configs(
+            {
+                "wave_interval": 60.0,
+                "simulation_duration": 720.0,
+            },
+            [45.0, 55.0],
+            waves_per_scenario=12,
+        )
+
+        self.assertEqual(
+            [
+                (
+                    config["wave_interval"],
+                    config["simulation_duration"],
+                )
+                for config in configs
+            ],
+            [(45.0, 540.0), (55.0, 660.0)],
+        )
+
+    def test_rollout_statistics_are_averaged_across_loads(self) -> None:
+        stats = average_rollout_stats(
+            [
+                {"elite_mean": 100.0, "improved_seeds": 1.0},
+                {"elite_mean": 120.0, "improved_seeds": 3.0},
+            ]
+        )
+
+        self.assertEqual(stats["elite_mean"], 110.0)
+        self.assertEqual(stats["improved_seeds"], 4.0)
+
+    def test_interval_scores_have_stable_order(self) -> None:
+        formatted = format_interval_scores(
+            {
+                "completed_by_interval": {
+                    70.0: 133.5,
+                    50.0: 106.0,
+                    60.0: 120.0,
+                }
+            }
+        )
+
+        self.assertEqual(
+            formatted,
+            "50:106.00;60:120.00;70:133.50",
+        )
+
     def test_explicit_seed_sets_are_deduplicated_in_order(self) -> None:
         self.assertEqual(
             resolve_training_seeds(7, 5, [11, 12, 11]),

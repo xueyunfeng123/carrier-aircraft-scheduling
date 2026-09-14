@@ -6,7 +6,7 @@ import argparse
 import copy
 import random
 import statistics
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 try:
     import torch
@@ -71,6 +71,9 @@ def main() -> None:
     parser.add_argument("--parking-ring-time-step", type=float, default=DEFAULT_CONFIG["parking_ring_time_step"])
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
     parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)
+    parser.add_argument("--train-wave-intervals", type=float, nargs="+")
+    parser.add_argument("--validation-wave-intervals", type=float, nargs="+")
+    parser.add_argument("--waves-per-scenario", type=int, default=12)
     parser.add_argument("--num-ammo-transport-vehicles", type=int, default=DEFAULT_CONFIG["num_ammo_transport_vehicles"])
     parser.add_argument("--num-lower-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_lower_weapon_lifts"])
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])
@@ -176,6 +179,16 @@ def main() -> None:
         allow_overlap=args.allow_seed_overlap,
     )
     config = build_config(args)
+    training_configs = build_interval_configs(
+        config,
+        args.train_wave_intervals,
+        args.waves_per_scenario,
+    )
+    validation_configs = build_interval_configs(
+        config,
+        args.validation_wave_intervals,
+        args.waves_per_scenario,
+    )
     ppo_config = PPOConfig(
         rollout_steps=args.rollout_steps,
         total_updates=args.total_updates,
@@ -195,9 +208,12 @@ def main() -> None:
         progress_shaping=args.progress_shaping,
     )
 
-    env = CarrierAircraftSchedulingEnv(config)
-    rollout_seeds = EpisodeSeedScheduler(training_seeds)
-    env.reset(seed=rollout_seeds.next_seed())
+    env = CarrierAircraftSchedulingEnv(training_configs[0])
+    rollout_seed_schedulers = [
+        EpisodeSeedScheduler(training_seeds)
+        for _ in training_configs
+    ]
+    env.reset(seed=rollout_seed_schedulers[0].next_seed())
     model = CarrierPolicyValueNet(
         AIRCRAFT_FEATURE_DIM,
         GLOBAL_FEATURE_DIM,
@@ -249,10 +265,10 @@ def main() -> None:
 
     bc_stats = None
     if args.bc_episodes > 0 and args.bc_epochs > 0:
-        demonstrations = collect_heuristic_demonstrations(
-            config,
+        demonstrations = collect_demonstrations_across_configs(
+            training_configs,
             training_seeds,
-            teacher=args.bc_teacher,
+            args.bc_teacher,
         )
         bc_optimizer = torch.optim.Adam(
             model.parameters(),
@@ -269,18 +285,23 @@ def main() -> None:
             target_loss_weight=args.bc_target_loss_weight,
         )
         for dagger_iteration in range(args.dagger_iterations):
-            dagger_demonstrations = collect_dagger_demonstrations(
-                model,
-                config,
-                select_dagger_seeds(
-                    training_seeds,
-                    dagger_iteration,
-                    args.dagger_episodes,
-                ),
-                args.device,
-                args.bc_teacher,
-                ppo_config,
+            dagger_seeds = select_dagger_seeds(
+                training_seeds,
+                dagger_iteration,
+                args.dagger_episodes,
             )
+            dagger_demonstrations = Demonstrations()
+            for training_config in training_configs:
+                dagger_demonstrations.extend(
+                    collect_dagger_demonstrations(
+                        model,
+                        training_config,
+                        dagger_seeds,
+                        args.device,
+                        args.bc_teacher,
+                        ppo_config,
+                    )
+                )
             demonstrations.extend(dagger_demonstrations)
             bc_stats = pretrain_behavior_cloning(
                 model,
@@ -333,26 +354,39 @@ def main() -> None:
                 iteration,
                 seeds_per_iteration,
             )
-            demonstrations, rollout_stats = (
-                collect_self_imitation_demonstrations(
-                    model,
-                    config,
-                    iteration_seeds,
-                    args.self_imitation_candidates,
-                    args.device,
-                    ppo_config,
-                    args.seed
-                    + iteration
-                    * seeds_per_iteration
-                    * args.self_imitation_candidates,
-                    temperature=args.self_imitation_temperature,
-                    stochastic_levels=(
-                        args.self_imitation_sample_levels
-                    ),
-                    only_improvements=(
-                        args.self_imitation_only_improvements
-                    ),
+            demonstrations = Demonstrations()
+            rollout_stats_items = []
+            for config_index, training_config in enumerate(
+                training_configs
+            ):
+                config_demonstrations, config_rollout_stats = (
+                    collect_self_imitation_demonstrations(
+                        model,
+                        training_config,
+                        iteration_seeds,
+                        args.self_imitation_candidates,
+                        args.device,
+                        ppo_config,
+                        args.seed
+                        + (
+                            iteration * len(training_configs)
+                            + config_index
+                        )
+                        * seeds_per_iteration
+                        * args.self_imitation_candidates,
+                        temperature=args.self_imitation_temperature,
+                        stochastic_levels=(
+                            args.self_imitation_sample_levels
+                        ),
+                        only_improvements=(
+                            args.self_imitation_only_improvements
+                        ),
+                    )
                 )
+                demonstrations.extend(config_demonstrations)
+                rollout_stats_items.append(config_rollout_stats)
+            rollout_stats = average_rollout_stats(
+                rollout_stats_items
             )
             imitation_stats = pretrain_behavior_cloning(
                 model,
@@ -410,6 +444,14 @@ def main() -> None:
             "eval_seed": validation_seeds[0],
             "training_seeds": training_seeds,
             "validation_seeds": validation_seeds,
+            "training_wave_intervals": [
+                item["wave_interval"]
+                for item in training_configs
+            ],
+            "validation_wave_intervals": [
+                item["wave_interval"]
+                for item in validation_configs
+            ],
             "init_checkpoint": args.init_checkpoint,
             "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
             "env_config": config,
@@ -448,7 +490,7 @@ def main() -> None:
             },
         }
 
-    def evaluate_and_track(update: int) -> Dict[str, float]:
+    def evaluate_and_track(update: int) -> Dict[str, Any]:
         nonlocal best_model_state, best_optimizer_state, best_score, best_update
         save_checkpoint(
             args.checkpoint,
@@ -457,7 +499,7 @@ def main() -> None:
             extra=checkpoint_extra(update),
         )
         eval_stats = evaluate_policy(
-            config,
+            validation_configs,
             args.checkpoint,
             validation_seeds,
             args.device,
@@ -481,15 +523,28 @@ def main() -> None:
             f"completed,{eval_stats['completed']:.2f},"
             f"std,{eval_stats['completed_std']:.2f},"
             f"worst_completed,{eval_stats['worst_completed']:.2f},"
+            f"by_interval,{format_interval_scores(eval_stats)},"
             f"missed,{eval_stats['missed']:.2f}"
         )
 
     for update in range(1, args.total_updates + 1):
+        if len(training_configs) > 1:
+            config_index = (update - 1) % len(training_configs)
+            env = CarrierAircraftSchedulingEnv(
+                training_configs[config_index]
+            )
+            env.reset(
+                seed=rollout_seed_schedulers[
+                    config_index
+                ].next_seed()
+            )
+        else:
+            config_index = 0
         buffer = collect_rollout(
             env,
             trainer,
             ppo_config,
-            rollout_seeds,
+            rollout_seed_schedulers[config_index],
         )
         last_value = estimate_value(model, env, args.device)
         buffer.compute_gae(last_value, ppo_config.gamma, ppo_config.gae_lambda)
@@ -511,10 +566,12 @@ def main() -> None:
                 f"entropy,{stats['entropy']:.6f},"
                 f"eval_completed,{eval_stats['completed']:.2f},"
                 f"eval_worst_completed,{eval_stats['worst_completed']:.2f},"
+                f"eval_by_interval,{format_interval_scores(eval_stats)},"
                 f"eval_missed,{eval_stats['missed']:.2f}"
             )
 
     if best_model_state is not None:
+        model.load_state_dict(best_model_state)
         optimizer.load_state_dict(best_optimizer_state)
         save_checkpoint(
             args.checkpoint,
@@ -542,6 +599,70 @@ def resolve_training_seeds(
         int(seed) + run_id
         for run_id in range(max(1, int(bc_episodes)))
     ]
+
+
+def build_interval_configs(
+    base_config: Dict[str, Any],
+    intervals: Optional[Sequence[float]],
+    waves_per_scenario: int,
+) -> List[Dict[str, Any]]:
+    if not intervals:
+        return [dict(base_config)]
+    if waves_per_scenario < 1:
+        raise ValueError("waves_per_scenario must be positive")
+
+    configs = []
+    for interval in dict.fromkeys(float(value) for value in intervals):
+        if interval <= 0.0:
+            raise ValueError("wave intervals must be positive")
+        scenario_config = dict(base_config)
+        scenario_config["wave_interval"] = interval
+        scenario_config["simulation_duration"] = (
+            interval * waves_per_scenario
+        )
+        configs.append(scenario_config)
+    return configs
+
+
+def collect_demonstrations_across_configs(
+    configs: Sequence[Dict[str, Any]],
+    seeds: Sequence[int],
+    teacher: str,
+) -> Demonstrations:
+    demonstrations = Demonstrations()
+    for config in configs:
+        demonstrations.extend(
+            collect_heuristic_demonstrations(
+                config,
+                list(seeds),
+                teacher=teacher,
+            )
+        )
+    return demonstrations
+
+
+def average_rollout_stats(
+    items: Sequence[Dict[str, float]],
+) -> Dict[str, float]:
+    if not items:
+        raise ValueError("at least one rollout statistic is required")
+    return {
+        key: (
+            sum(item[key] for item in items)
+            if key in ("improved_seeds", "selected_seeds")
+            else statistics.mean(item[key] for item in items)
+        )
+        for key in items[0]
+    }
+
+
+def format_interval_scores(stats: Dict[str, Any]) -> str:
+    return ";".join(
+        f"{interval:g}:{score:.2f}"
+        for interval, score in sorted(
+            stats["completed_by_interval"].items()
+        )
+    )
 
 
 def resolve_validation_seeds(
@@ -834,25 +955,30 @@ def estimate_value(model, env: CarrierAircraftSchedulingEnv, device: str) -> flo
 
 
 def evaluate_policy(
-    config: Dict,
+    configs: Sequence[Dict[str, Any]],
     checkpoint: str,
     seeds: Sequence[int],
     device: str,
-) -> Dict[str, float]:
-    results = [
-        run_episode(
-            "rl",
+) -> Dict[str, Any]:
+    scenario_results = [
+        (
             config,
-            seed=seed,
-            max_steps=100000,
-            solver_options={
-                "checkpoint": checkpoint,
-                "device": device,
-                "deterministic": True,
-            },
+            run_episode(
+                "rl",
+                config,
+                seed=seed,
+                max_steps=100000,
+                solver_options={
+                    "checkpoint": checkpoint,
+                    "device": device,
+                    "deterministic": True,
+                },
+            ),
         )
+        for config in configs
         for seed in seeds
     ]
+    results = [result for _, result in scenario_results]
     completed = [
         item["total_sorties_completed"]
         for item in results
@@ -866,6 +992,15 @@ def evaluate_policy(
         ),
         "worst_completed": min(completed),
         "missed": statistics.mean(item["total_missed_sorties"] for item in results),
+        "completed_by_interval": {
+            float(config["wave_interval"]): statistics.mean(
+                result["total_sorties_completed"]
+                for result_config, result in scenario_results
+                if result_config["wave_interval"]
+                == config["wave_interval"]
+            )
+            for config in configs
+        },
     }
 
 

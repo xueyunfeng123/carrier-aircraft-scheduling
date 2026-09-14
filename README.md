@@ -272,6 +272,9 @@ python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 # 复现训练/验证/测试隔离的学习式先验实验
 ./scripts/run_rl_generalization_experiment.sh
 
+# 复现跨负载训练与未见负载测试
+./scripts/run_rl_multiload_experiment.sh
+
 # 旧版随机策略明细输出
 python -m scripts.random_policy_test
 
@@ -303,6 +306,9 @@ CP-SAT 的平均完成架次分别为 120.20、119.75 和 119.50。学习门控�
 相对 CP-SAT 为 14 胜、5 平、1 负。`elite_cp` 教师均值为 119.80；
 学习策略均值更高，但该差异尚未达到显著水平。
 正式 Heuristic 均值为 117.60，学习门控策略在 20 个种子上全部胜出。
+在 47.5-67.5 分钟的 5 个未见负载、共 25 个场景上，跨负载策略相对
+Heuristic 平均增加 2.92 架次，为 24 胜、1 平、0 负；相对 CP-SAT
+平均增加 0.24 架次，差异不显著。
 
 共享机队将飞机特征从永久 A/B 标记改为初始备用角色，并将全局特征改为
 波次填充率和待回收压力；空间图进一步加入目标/车辆集合、候选排序先验

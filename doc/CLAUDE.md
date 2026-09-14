@@ -403,7 +403,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   target/vehicle candidate features, 20 global features, and observation
   schema version 9.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 55 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+- All 61 unit tests pass. In the corrected fixed seed-10007, 60-minute,
   12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
   99/113/118/106/118/119 launches.
@@ -452,6 +452,12 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   (`p=0.146`); do not claim that the policy has surpassed its teacher.
 - Reproduction: `scripts/run_rl_generalization_experiment.sh`; details:
   `doc/rl_generalization_iteration.md`.
+- Multi-load training supports disjoint training and validation interval sets.
+  The retained checkpoint adapts the fixed-load PPO policy with multi-load BC;
+  it does not add PPO updates. On 25 frozen scenarios spanning unseen
+  47.5/52.5/57.5/62.5/67.5-minute intervals, `rl_multiload_bc` averages 2.92
+  more launches than Heuristic (24 wins, 1 tie) and matches CP-SAT within
+  0.24 launches on average.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or
