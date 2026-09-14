@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Sequence, Tuple
 
 import torch
 from torch.nn import functional as F
@@ -209,6 +209,114 @@ def collect_heuristic_demonstrations(
     return demonstrations
 
 
+def collect_self_imitation_demonstrations(
+    model,
+    env_config: Dict,
+    seeds: Sequence[int],
+    candidates_per_seed: int,
+    device: str,
+    ppo_config,
+    policy_seed: int,
+    temperature: float = 1.0,
+    stochastic_levels: Sequence[str] = ("low",),
+    only_improvements: bool = False,
+) -> Tuple[Demonstrations, Dict[str, float]]:
+    """Keep the highest-return complete policy trajectory for each seed."""
+
+    if candidates_per_seed < 1:
+        raise ValueError("candidates_per_seed must be positive")
+    if not seeds:
+        raise ValueError("at least one self-imitation seed is required")
+
+    from rl.ppo_trainer import PPOTrainer
+
+    trainer = PPOTrainer(
+        model,
+        optimizer=None,
+        config=ppo_config,
+        device=device,
+    )
+    selected = Demonstrations()
+    deterministic_scores: List[int] = []
+    elite_scores: List[int] = []
+    improved_seeds = 0
+    selected_seeds = 0
+    model.eval()
+
+    for seed_index, seed in enumerate(seeds):
+        candidates = []
+        for candidate_index in range(candidates_per_seed):
+            env = CarrierAircraftSchedulingEnv(env_config)
+            env.reset(seed=int(seed))
+            trajectory = Demonstrations()
+            deterministic = candidate_index == 0
+            torch.manual_seed(
+                int(policy_seed)
+                + seed_index * candidates_per_seed
+                + candidate_index
+            )
+            steps = 0
+            while not env.done and steps < 100_000:
+                encoded = encode_observation(env)
+                if not any(encoded.high_mask):
+                    env.step(None)
+                    steps += 1
+                    continue
+                action, _, _ = trainer.select_action(
+                    encoded,
+                    env,
+                    deterministic=deterministic,
+                    temperature=temperature,
+                    stochastic_levels=stochastic_levels,
+                )
+                append_demonstration(
+                    trajectory,
+                    env,
+                    encoded,
+                    action,
+                )
+                env.step(action)
+                steps += 1
+            if not env.done:
+                raise RuntimeError(
+                    "self-imitation trajectory exceeded 100000 steps"
+                )
+            score = int(
+                env.get_evaluation_metrics()[
+                    "total_sorties_completed"
+                ]
+            )
+            candidates.append((score, trajectory))
+
+        deterministic_score = candidates[0][0]
+        elite_score, elite_trajectory = max(
+            candidates,
+            key=lambda item: item[0],
+        )
+        deterministic_scores.append(deterministic_score)
+        elite_scores.append(elite_score)
+        improved_seeds += int(elite_score > deterministic_score)
+        if not only_improvements or elite_score > deterministic_score:
+            selected.extend(elite_trajectory)
+            selected_seeds += 1
+
+    return selected, {
+        "deterministic_mean": sum(deterministic_scores)
+        / len(deterministic_scores),
+        "elite_mean": sum(elite_scores) / len(elite_scores),
+        "mean_improvement": sum(
+            elite - deterministic
+            for elite, deterministic in zip(
+                elite_scores,
+                deterministic_scores,
+            )
+        )
+        / len(elite_scores),
+        "improved_seeds": float(improved_seeds),
+        "selected_seeds": float(selected_seeds),
+    }
+
+
 def pretrain_behavior_cloning(
     model,
     optimizer,
@@ -298,7 +406,7 @@ def pretrain_behavior_cloning(
                 target_actions[mb],
             )
 
-            optimizer.zero_grad()
+            model.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             last_loss = float(loss.item())

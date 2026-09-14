@@ -50,6 +50,7 @@ def main() -> None:
     parser.add_argument("--rl-label", type=str, default="rl")
     parser.add_argument("--rl-low-rank-prior", type=float)
     parser.add_argument("--rl-target-rank-prior", type=float)
+    parser.add_argument("--rl-low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--rl-disable-low-rank-prior", action="store_true")
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
@@ -90,6 +91,9 @@ def main() -> None:
                     "deterministic": True,
                     "low_rank_prior": args.rl_low_rank_prior,
                     "target_rank_prior": args.rl_target_rank_prior,
+                    "low_rank_prior_scale": (
+                        args.rl_low_rank_prior_scale
+                    ),
                     "disable_low_rank_prior": (
                         args.rl_disable_low_rank_prior
                     ),

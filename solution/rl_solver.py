@@ -30,6 +30,7 @@ class RLSolver:
         target_embed_dim: int = 64,
         low_rank_prior: Optional[float] = None,
         target_rank_prior: Optional[float] = None,
+        low_rank_prior_scale: float = 1.0,
         disable_low_rank_prior: bool = False,
     ):
         try:
@@ -83,8 +84,11 @@ class RLSolver:
         self.model = CarrierPolicyValueNet(**model_config).to(device)
         if checkpoint_payload is not None:
             self.model.load_state_dict(checkpoint_payload["model_state"])
-        if disable_low_rank_prior:
-            self.model.low_rank_prior_scale = 0.0
+        self.model.low_rank_prior_scale = (
+            0.0
+            if disable_low_rank_prior
+            else float(low_rank_prior_scale)
+        )
         self.model.eval()
 
         # Reuse action selection code without an optimizer during inference.

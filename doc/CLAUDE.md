@@ -403,7 +403,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   target/vehicle candidate features, 20 global features, and observation
   schema version 9.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 52 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+- All 55 unit tests pass. In the corrected fixed seed-10007, 60-minute,
   12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
   99/113/118/106/118/119 launches.
@@ -445,6 +445,8 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - On frozen seeds `40001-40020`, learned-gate BC+PPO averages 120.20 launches,
   versus 119.75 for fixed-prior RL and 119.50 for CP-SAT. The paired learned
   policy versus CP-SAT comparison is 14 wins, 5 ties, and 1 loss.
+- The formal Heuristic averages 117.60; learned-gate RL wins all 20 paired
+  seeds by 2.60 launches on average.
 - The `elite_cp` teacher averages 119.80 on the same seeds. Learned-gate RL is
   higher by 0.40 on average but the paired sign test is not significant
   (`p=0.146`); do not claim that the policy has surpassed its teacher.

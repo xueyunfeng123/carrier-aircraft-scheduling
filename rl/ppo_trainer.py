@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import Dict, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from rl.masked_categorical import masked_categorical
 from rl.model import select_low_action_logits
@@ -35,7 +35,16 @@ class PPOTrainer:
         encoded,
         env,
         deterministic: bool = False,
+        temperature: float = 1.0,
+        stochastic_levels: Optional[Sequence[str]] = None,
     ) -> Tuple[Dict[str, int], float, float]:
+        if temperature <= 0.0:
+            raise ValueError("temperature must be positive")
+        sampled_levels = set(
+            stochastic_levels
+            if stochastic_levels is not None
+            else ("high", "low", "target")
+        )
         batch = to_torch_batch(encoded, self.device)
         with self.torch.no_grad():
             high_logits, low_logits, value = self.model(
@@ -44,16 +53,22 @@ class PPOTrainer:
                 batch["targets"],
                 batch["low_aux"],
             )
-            high_dist = masked_categorical(high_logits, batch["high_mask"])
-            if deterministic:
+            high_dist = masked_categorical(
+                high_logits / temperature,
+                batch["high_mask"],
+            )
+            if deterministic or "high" not in sampled_levels:
                 high_action = high_logits.masked_fill(~batch["high_mask"], -1.0e9).argmax(dim=-1)
             else:
                 high_action = high_dist.sample()
 
             low_mask = batch["low_masks"][self.torch.arange(1, device=self.device), high_action]
             selected_low_logits = select_low_action_logits(low_logits, high_action)
-            low_dist = masked_categorical(selected_low_logits, low_mask)
-            if deterministic:
+            low_dist = masked_categorical(
+                selected_low_logits / temperature,
+                low_mask,
+            )
+            if deterministic or "low" not in sampled_levels:
                 low_action = selected_low_logits.masked_fill(~low_mask, -1.0e9).argmax(dim=-1)
             else:
                 low_action = low_dist.sample()
@@ -85,8 +100,11 @@ class PPOTrainer:
                 low_action,
                 batch["low_aux"],
             )
-            target_dist = masked_categorical(target_logits, target_mask)
-            if deterministic:
+            target_dist = masked_categorical(
+                target_logits / temperature,
+                target_mask,
+            )
+            if deterministic or "target" not in sampled_levels:
                 target_action = target_logits.masked_fill(
                     ~target_mask,
                     -1.0e9,

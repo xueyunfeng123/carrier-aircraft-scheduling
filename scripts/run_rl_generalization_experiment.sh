@@ -57,7 +57,7 @@ VALIDATION_SEEDS=(31001 31002 31003)
   --checkpoint checkpoints/rl_learned_prior_ppo.pt
 
 "$PYTHON_BIN" -m scripts.benchmark_non_rl \
-  --solvers cp_sat \
+  --solvers heuristic cp_sat \
   --runs 20 \
   --seed 40001 \
   --rl-checkpoint checkpoints/rl_learned_prior_ppo.pt \

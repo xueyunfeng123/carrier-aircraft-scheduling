@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--low-rank-prior", type=float)
     parser.add_argument("--target-rank-prior", type=float)
+    parser.add_argument("--low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--disable-low-rank-prior", action="store_true")
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
@@ -60,6 +61,7 @@ def main() -> None:
                 "deterministic": not args.stochastic,
                 "low_rank_prior": args.low_rank_prior,
                 "target_rank_prior": args.target_rank_prior,
+                "low_rank_prior_scale": args.low_rank_prior_scale,
                 "disable_low_rank_prior": args.disable_low_rank_prior,
             },
         )

@@ -7,6 +7,7 @@ import unittest
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.behavior_cloning import (
     collect_heuristic_demonstrations,
+    collect_self_imitation_demonstrations,
     pretrain_behavior_cloning,
 )
 from rl.model import CarrierPolicyValueNet
@@ -28,6 +29,7 @@ from scripts.train_rl import (
     collect_rollout,
     resolve_training_seeds,
     resolve_validation_seeds,
+    self_imitation_parameters,
     select_dagger_seeds,
     validate_seed_partition,
 )
@@ -155,6 +157,23 @@ class TrainingSeedProtocolTest(unittest.TestCase):
             [1.0e-5, 1.0e-3],
         )
 
+    def test_self_imitation_can_update_only_rank_gate(self) -> None:
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            adaptive_low_rank_prior=True,
+        )
+
+        selected = self_imitation_parameters(model, "gate")
+
+        self.assertEqual(
+            {id(parameter) for parameter in selected},
+            {
+                id(parameter)
+                for parameter in model.low_rank_gate.parameters()
+            },
+        )
+
 
 class PolicyNetworkTest(unittest.TestCase):
     def test_spatial_observation_reports_pathway_availability(self) -> None:
@@ -238,6 +257,44 @@ class PolicyNetworkTest(unittest.TestCase):
             action["_target_mask"][action["target_slot"]]
         )
         self.assertTrue(env._is_action_valid(*env._parse_action(action)))
+
+    def test_empty_stochastic_levels_match_deterministic_action(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+        encoded = encode_observation(env)
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+        )
+        trainer = PPOTrainer(
+            model,
+            optimizer=None,
+            config=PPOConfig(),
+        )
+
+        deterministic, _, _ = trainer.select_action(
+            encoded,
+            env,
+            deterministic=True,
+        )
+        no_sampling, _, _ = trainer.select_action(
+            encoded,
+            env,
+            stochastic_levels=(),
+        )
+
+        self.assertEqual(
+            (
+                deterministic["high_level"],
+                deterministic["aircraft_id"],
+                deterministic["target_slot"],
+            ),
+            (
+                no_sampling["high_level"],
+                no_sampling["aircraft_id"],
+                no_sampling["target_slot"],
+            ),
+        )
 
     def test_target_mask_matches_launch_candidates(self) -> None:
         env = CarrierAircraftSchedulingEnv()
@@ -329,6 +386,7 @@ class PolicyNetworkTest(unittest.TestCase):
             env,
             low_rank_prior=0.0,
             target_rank_prior=0.0,
+            low_rank_prior_scale=0.5,
             disable_low_rank_prior=True,
         )
 
@@ -336,8 +394,55 @@ class PolicyNetworkTest(unittest.TestCase):
         self.assertEqual(solver.model.target_rank_prior, 0.0)
         self.assertEqual(solver.model.low_rank_prior_scale, 0.0)
 
+        scaled_solver = RLSolver(
+            env,
+            low_rank_prior_scale=0.5,
+        )
+        self.assertEqual(
+            scaled_solver.model.low_rank_prior_scale,
+            0.5,
+        )
+
 
 class BehaviorCloningTest(unittest.TestCase):
+    def test_self_imitation_keeps_best_complete_trajectory(self) -> None:
+        config = {
+            "num_aircraft": 4,
+            "group_size": 2,
+            "num_parking_spots": 4,
+            "wave_interval": 20.0,
+            "simulation_duration": 40.0,
+            "spatial_graph_enabled": False,
+            "num_fuel_servers": 2,
+            "num_inspection_vehicles": 2,
+            "num_arm_vehicles": 2,
+            "num_ammo_transport_vehicles": 2,
+            "num_lower_weapon_lifts": 2,
+            "num_upper_weapon_lifts": 2,
+            "num_tow_vehicles": 2,
+            "num_personnel": 8,
+        }
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+        )
+
+        demonstrations, stats = collect_self_imitation_demonstrations(
+            model,
+            config,
+            seeds=[7],
+            candidates_per_seed=2,
+            device="cpu",
+            ppo_config=PPOConfig(),
+            policy_seed=19,
+        )
+
+        self.assertGreater(len(demonstrations), 0)
+        self.assertGreaterEqual(
+            stats["elite_mean"],
+            stats["deterministic_mean"],
+        )
+
     def test_heuristic_demonstrations_can_pretrain_policy(self) -> None:
         import torch
 

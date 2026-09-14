@@ -1,8 +1,10 @@
 record_type,name,runs,seed_start,mean_sorties,std_sorties,ci95_low,ci95_high,mean_difference,wins,ties,losses,two_sided_sign_test_p
 method,cp_sat,20,40001,119.50,0.6070,119.2340,119.7660,,,,,
+method,heuristic,20,40001,117.60,1.2312,117.0604,118.1396,,,,,
 method,elite_cp_teacher,20,40001,119.80,0.6156,119.5302,120.0698,,,,,
 method,rl_fixed_prior,20,40001,119.75,0.7164,119.4360,120.0640,,,,,
 method,rl_learned_prior_ppo,20,40001,120.20,0.6959,119.8950,120.5050,,,,,
 comparison,rl_learned_prior_ppo_minus_cp_sat,20,40001,,,,,0.70,14,5,1,0.0009765625
+comparison,rl_learned_prior_ppo_minus_heuristic,20,40001,,,,,2.60,20,0,0,0.0000019073486328125
 comparison,rl_learned_prior_ppo_minus_elite_cp_teacher,20,40001,,,,,0.40,9,8,3,0.14599609375
 comparison,rl_learned_prior_ppo_minus_rl_fixed_prior,20,40001,,,,,0.45,9,9,2,0.0654296875

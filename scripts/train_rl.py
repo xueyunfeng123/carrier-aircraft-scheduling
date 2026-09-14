@@ -20,6 +20,7 @@ from rl.behavior_cloning import (
     append_demonstration,
     build_demonstration_teacher,
     collect_heuristic_demonstrations,
+    collect_self_imitation_demonstrations,
     pretrain_behavior_cloning,
 )
 from rl.checkpoint import load_checkpoint, save_checkpoint
@@ -116,6 +117,39 @@ def main() -> None:
     parser.add_argument("--dagger-iterations", type=int, default=0)
     parser.add_argument("--dagger-episodes", type=int, default=1)
     parser.add_argument("--dagger-epochs", type=int, default=10)
+    parser.add_argument("--self-imitation-iterations", type=int, default=0)
+    parser.add_argument("--self-imitation-candidates", type=int, default=4)
+    parser.add_argument(
+        "--self-imitation-seeds-per-iteration",
+        type=int,
+        default=0,
+    )
+    parser.add_argument("--self-imitation-epochs", type=int, default=10)
+    parser.add_argument(
+        "--self-imitation-learning-rate",
+        type=float,
+        default=1.0e-4,
+    )
+    parser.add_argument(
+        "--self-imitation-temperature",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--self-imitation-sample-levels",
+        nargs="+",
+        choices=("high", "low", "target"),
+        default=["low"],
+    )
+    parser.add_argument(
+        "--self-imitation-only-improvements",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--self-imitation-parameter-scope",
+        choices=("all", "low", "gate"),
+        default="all",
+    )
     parser.add_argument("--env-reward-scale", type=float, default=0.0)
     parser.add_argument("--sortie-bonus", type=float, default=1.0)
     parser.add_argument("--miss-penalty", type=float, default=0.0)
@@ -280,6 +314,78 @@ def main() -> None:
         )
         del demonstrations, bc_optimizer
 
+    self_imitation_stats = []
+    if args.self_imitation_iterations > 0:
+        self_imitation_optimizer = torch.optim.Adam(
+            self_imitation_parameters(
+                model,
+                args.self_imitation_parameter_scope,
+            ),
+            lr=args.self_imitation_learning_rate,
+        )
+        seeds_per_iteration = (
+            args.self_imitation_seeds_per_iteration
+            or len(training_seeds)
+        )
+        for iteration in range(args.self_imitation_iterations):
+            iteration_seeds = select_dagger_seeds(
+                training_seeds,
+                iteration,
+                seeds_per_iteration,
+            )
+            demonstrations, rollout_stats = (
+                collect_self_imitation_demonstrations(
+                    model,
+                    config,
+                    iteration_seeds,
+                    args.self_imitation_candidates,
+                    args.device,
+                    ppo_config,
+                    args.seed
+                    + iteration
+                    * seeds_per_iteration
+                    * args.self_imitation_candidates,
+                    temperature=args.self_imitation_temperature,
+                    stochastic_levels=(
+                        args.self_imitation_sample_levels
+                    ),
+                    only_improvements=(
+                        args.self_imitation_only_improvements
+                    ),
+                )
+            )
+            imitation_stats = pretrain_behavior_cloning(
+                model,
+                self_imitation_optimizer,
+                demonstrations,
+                epochs=args.self_imitation_epochs,
+                minibatch_size=args.bc_minibatch_size,
+                device=args.device,
+                low_loss_weight=args.bc_low_loss_weight,
+                target_loss_weight=args.bc_target_loss_weight,
+            )
+            iteration_stats = {
+                **rollout_stats,
+                **{
+                    f"imitation_{key}": value
+                    for key, value in imitation_stats.items()
+                },
+            }
+            self_imitation_stats.append(iteration_stats)
+            print(
+                "self_imitation,"
+                f"iteration,{iteration + 1},"
+                f"seeds,{len(iteration_seeds)},"
+                f"candidates,{args.self_imitation_candidates},"
+                f"deterministic_mean,{rollout_stats['deterministic_mean']:.2f},"
+                f"elite_mean,{rollout_stats['elite_mean']:.2f},"
+                f"improved_seeds,{int(rollout_stats['improved_seeds'])},"
+                f"selected_seeds,{int(rollout_stats['selected_seeds'])},"
+                f"accuracy,{imitation_stats['accuracy']:.6f}"
+            )
+            del demonstrations
+        del self_imitation_optimizer
+
     optimizer = build_ppo_optimizer(
         model,
         args.learning_rate,
@@ -309,6 +415,24 @@ def main() -> None:
             "env_config": config,
             "ppo_config": ppo_config.__dict__,
             "rank_gate_learning_rate": args.rank_gate_learning_rate,
+            "self_imitation": {
+                "iterations": args.self_imitation_iterations,
+                "candidates": args.self_imitation_candidates,
+                "seeds_per_iteration": (
+                    args.self_imitation_seeds_per_iteration
+                ),
+                "epochs": args.self_imitation_epochs,
+                "learning_rate": args.self_imitation_learning_rate,
+                "temperature": args.self_imitation_temperature,
+                "sample_levels": args.self_imitation_sample_levels,
+                "only_improvements": (
+                    args.self_imitation_only_improvements
+                ),
+                "parameter_scope": (
+                    args.self_imitation_parameter_scope
+                ),
+                "stats": self_imitation_stats,
+            },
             "behavior_cloning": {
                 "episodes": args.bc_episodes,
                 "teacher": args.bc_teacher,
@@ -508,6 +632,31 @@ def build_ppo_optimizer(
             },
         ]
     )
+
+
+def self_imitation_parameters(model, scope: str):
+    if scope == "all":
+        return list(model.parameters())
+    if scope == "gate":
+        if not getattr(model, "adaptive_low_rank_prior", False):
+            raise ValueError(
+                "gate-only self-imitation requires "
+                "--adaptive-low-rank-prior"
+            )
+        return list(model.low_rank_gate.parameters())
+    if scope == "low":
+        modules = [
+            model.low_context,
+            model.low_head,
+        ]
+        if getattr(model, "adaptive_low_rank_prior", False):
+            modules.append(model.low_rank_gate)
+        return [
+            parameter
+            for module in modules
+            for parameter in module.parameters()
+        ]
+    raise ValueError(f"unknown self-imitation parameter scope: {scope}")
 
 
 def collect_rollout(
