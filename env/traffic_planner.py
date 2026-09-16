@@ -5,9 +5,12 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, Optional, Sequence, Tuple
 
 from env.scenario import DeckGraph
+
+if TYPE_CHECKING:
+    from env.cbs_planner import CBSPlan, RouteRequest
 
 
 @dataclass(frozen=True)
@@ -59,11 +62,17 @@ class SpaceTimeTrafficPlanner:
         start_time: float,
         shared_nodes: Iterable[str] = (),
         reserve: bool = True,
+        vertex_constraints: Iterable[Tuple[str, int]] = (),
+        edge_constraints: Iterable[Tuple[str, str, int]] = (),
     ) -> Optional[TimedRoute]:
         self.graph.node(source)
         self.graph.node(target)
         shared = frozenset(shared_nodes)
+        forbidden_vertices = frozenset(vertex_constraints)
+        forbidden_edges = frozenset(edge_constraints)
         start_tick = self._ceil_tick(start_time)
+        if (source, start_tick) in forbidden_vertices:
+            return None
         queue = [(0.0, start_tick, source)]
         costs = {(source, start_tick): 0.0}
         predecessor: Dict[
@@ -90,6 +99,17 @@ class SpaceTimeTrafficPlanner:
             for next_node, duration, is_wait in transitions:
                 next_tick = tick + duration
                 if next_tick - start_tick > self.max_ticks:
+                    continue
+                if (next_node, next_tick) in forbidden_vertices:
+                    continue
+                if (
+                    not is_wait
+                    and any(
+                        (node, next_node, edge_tick)
+                        in forbidden_edges
+                        for edge_tick in range(tick, next_tick)
+                    )
+                ):
                     continue
                 if not self._transition_available(
                     entity_id,
@@ -159,6 +179,22 @@ class SpaceTimeTrafficPlanner:
                     (source, node, edge_tick)
                 ] = route.entity_id
         self.routes[route.entity_id] = route
+
+    def plan_batch(
+        self,
+        requests: Sequence["RouteRequest"],
+        reserve: bool = True,
+        max_expanded_nodes: Optional[int] = None,
+    ) -> Optional["CBSPlan"]:
+        """Plan a fixed request batch jointly with conflict-based search."""
+
+        from env.cbs_planner import ConflictBasedSearchPlanner
+
+        return ConflictBasedSearchPlanner(self).plan(
+            requests,
+            reserve=reserve,
+            max_expanded_nodes=max_expanded_nodes,
+        )
 
     def prune(self, current_time: float) -> None:
         current_tick = int(math.floor(current_time / self.time_step))

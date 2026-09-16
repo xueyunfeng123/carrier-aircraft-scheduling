@@ -288,6 +288,9 @@ python -m scripts.benchmark_non_rl \
 python -m scripts.benchmark_non_rl \
     --disable-spatial-graph \
     --output outputs/spatial_deck_graph_disabled_control_60min_seed10007.csv
+
+# 固定批次路径规划：顺序 Cooperative A* 与最优 CBS 对照
+python -m scripts.benchmark_cbs_paths
 ```
 
 RL 策略采用“作业类型→飞机→目标停机位/跑道/车辆”的三层 masked
@@ -314,6 +317,12 @@ Heuristic 平均增加 2.92 架次，为 24 胜、1 平、0 负；相对 CP-SAT
 波次填充率和待回收压力；空间图进一步加入目标/车辆集合、候选排序先验
 和空闲通道比例，当前观测版本为 9。旧环境训练的 checkpoint 会被明确
 拒绝，必须重新执行 BC+PPO 训练。
+
+`SpaceTimeTrafficPlanner.plan_batch()` 使用 CBS 联合规划固定的一批移动
+请求，以路径持续时间之和（SOC）为目标。该接口保留已有预约作为不可变
+障碍，并在找到整批无冲突解后一次性提交预约。当前主仿真仍按调度动作
+逐个启动移动，因此该保证只适用于显式提交给 `plan_batch()` 的固定批次，
+不代表整个多波次调度全局最优。
 
 实验结果建议写入 `outputs/`：
 

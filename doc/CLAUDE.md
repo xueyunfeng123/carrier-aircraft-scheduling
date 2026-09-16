@@ -186,6 +186,7 @@ evaluation scenarios.
 | `env/scenario.py` | Solver-independent scenario, process, mission-plan, duration-distribution, and deck-graph definitions |
 | `env/project_deck_graph.py` | Haitian-derived schematic topology and static destination occupancy |
 | `env/traffic_planner.py` | Cooperative A* node/edge reservation table shared by aircraft and mobile vehicles |
+| `env/cbs_planner.py` | Optimal sum-of-costs CBS for a fixed batch of movement requests |
 | `env/carrier_aircraft_env.py` | Event queue, aircraft state machine, resource accounting, wave transitions, masks, and metrics |
 | `env/yoon_sortie_env.py` | Executable Yoon 2023 structural replication with mission, movement, runway, lift, hangar, and maintenance events |
 | `scripts/solve.py` | Unified command-line runner and CSV export |
@@ -403,7 +404,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   target/vehicle candidate features, 20 global features, and observation
   schema version 9.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 61 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+- All 66 unit tests pass. In the corrected fixed seed-10007, 60-minute,
   12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
   99/113/118/106/118/119 launches.
