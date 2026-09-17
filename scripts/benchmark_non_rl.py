@@ -58,6 +58,11 @@ def main() -> None:
         type=int,
         default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
     )
+    parser.add_argument(
+        "--disruption-profile",
+        choices=("none", "light", "medium", "heavy"),
+        default=DEFAULT_CONFIG["disruption_profile"],
+    )
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
     parser.add_argument(
@@ -88,6 +93,7 @@ def main() -> None:
         config["cbs_max_expanded_nodes"] = (
             args.cbs_max_expanded_nodes
         )
+        config["disruption_profile"] = args.disruption_profile
         capacity = args.waves * int(config["group_size"])
 
         for solver_name in solver_names:
@@ -152,6 +158,10 @@ def main() -> None:
                         "seed": args.seed + run_id,
                         "wave_interval": float(interval),
                         "waves": args.waves,
+                        "disruption_profile": args.disruption_profile,
+                        "disruptions_started": result["disruptions"][
+                            "started"
+                        ],
                         "total_sorties_completed": result[
                             "total_sorties_completed"
                         ],
@@ -178,6 +188,7 @@ def main() -> None:
                 "wave_interval": float(interval),
                 "simulation_duration": config["simulation_duration"],
                 "waves": args.waves,
+                "disruption_profile": args.disruption_profile,
                 "runs": args.runs,
                 "seed_start": args.seed,
                 "mean_total_sorties": statistics.mean(totals),

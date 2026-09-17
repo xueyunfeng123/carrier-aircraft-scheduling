@@ -80,6 +80,11 @@ def main() -> None:
         type=int,
         default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
     )
+    parser.add_argument(
+        "--disruption-profile",
+        choices=("none", "light", "medium", "heavy"),
+        default=DEFAULT_CONFIG["disruption_profile"],
+    )
     parser.add_argument("--num-ammo-transport-vehicles", type=int, default=DEFAULT_CONFIG["num_ammo_transport_vehicles"])
     parser.add_argument("--num-lower-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_lower_weapon_lifts"])
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])

@@ -15,6 +15,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from env.cbs_planner import CBSExpansionLimitError, RouteRequest
 from env.config import ACTION_TO_INDEX, DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
+from env.disruptions import (
+    DisruptionSpec,
+    build_disruption_schedule,
+)
 from env.project_deck_graph import (
     DeckOccupancy,
     DeckRouteReservation,
@@ -175,11 +179,13 @@ class CarrierAircraftSchedulingEnv:
                 ),
             )
         self.rng = random.Random()
+        self.disruption_rng = random.Random()
         self.reset()
 
     def reset(self, seed: Optional[int] = None) -> Dict[str, Any]:
         if seed is not None:
             self.rng.seed(seed)
+            self.disruption_rng.seed(int(seed) + 1_000_003)
 
         self.time = 0.0
         self.event_sequence = 0
@@ -284,6 +290,28 @@ class CarrierAircraftSchedulingEnv:
             "sum_of_costs_before": 0.0,
             "sum_of_costs_after": 0.0,
         }
+        self.active_disruptions: Dict[int, DisruptionSpec] = {}
+        self.unavailable_vehicle_ids: set[str] = set()
+        self.closed_runway_ids: set[int] = set()
+        self.unavailable_aircraft_ids: set[int] = set()
+        self.service_time_multipliers: Dict[str, float] = {
+            "fuel": 1.0,
+            "inspection": 1.0,
+            "arm": 1.0,
+        }
+        self.disruption_schedule = build_disruption_schedule(
+            self.config,
+            self.disruption_rng,
+            [vehicle.vehicle_id for vehicle in self.service_vehicles],
+        )
+        self.disruption_metrics: Dict[str, Any] = {
+            "profile": str(self.config["disruption_profile"]),
+            "scheduled": len(self.disruption_schedule),
+            "started": 0,
+            "ended": 0,
+            "started_by_kind": {},
+        }
+        self._schedule_disruption_events()
 
         self.total_reward = 0.0
         self.done = False
@@ -363,17 +391,38 @@ class CarrierAircraftSchedulingEnv:
             "aircraft": [record.as_vector() for record in self.aircraft],
             "resources": {
                 "recovery_channels": self.free_recovery_channels,
-                "fuel_servers": self.free_fuel_servers,
-                "inspection_vehicles": self.free_inspection_vehicles,
-                "arm_vehicles": self.free_arm_vehicles,
+                "fuel_servers": min(
+                    self.free_fuel_servers,
+                    len(self._available_service_vehicles("fuel")),
+                ),
+                "inspection_vehicles": min(
+                    self.free_inspection_vehicles,
+                    len(
+                        self._available_service_vehicles(
+                            "inspection"
+                        )
+                    ),
+                ),
+                "arm_vehicles": min(
+                    self.free_arm_vehicles,
+                    len(self._available_service_vehicles("arm")),
+                ),
                 "ammo_transport_vehicles": self.free_ammo_transport_vehicles,
                 "lower_weapon_lifts": self.free_lower_weapon_lifts,
                 "upper_weapon_lifts": self.free_upper_weapon_lifts,
                 "personnel": self.free_personnel,
-                "launch_channels": self.free_launch_channels,
+                "launch_channels": min(
+                    self.free_launch_channels,
+                    int(self.config["num_launch_positions"])
+                    - len(self.closed_runway_ids),
+                ),
                 "free_parking_spots": sum(1 for item in self.parking_occupancy if item is None),
             },
-            "event_queue_size": len(self.event_queue),
+            "event_queue_size": sum(
+                event.event_type
+                not in ("disruption_start", "disruption_end")
+                for event in self.event_queue
+            ),
             "parking_transfer_times": list(self.parking_transfer_times),
             "wave": {
                 "index": self.current_wave_index,
@@ -400,9 +449,33 @@ class CarrierAircraftSchedulingEnv:
                     "service_type": vehicle.service_type,
                     "node_id": vehicle.node_id,
                     "busy_aircraft_id": vehicle.busy_aircraft_id,
+                    "available": (
+                        vehicle.busy_aircraft_id is None
+                        and vehicle.vehicle_id
+                        not in self.unavailable_vehicle_ids
+                    ),
                 }
                 for vehicle in self.service_vehicles
             ],
+            "disruptions": {
+                "profile": self.disruption_metrics["profile"],
+                "active": [
+                    spec.as_dict()
+                    for spec in self.active_disruptions.values()
+                ],
+                "unavailable_vehicle_ids": sorted(
+                    self.unavailable_vehicle_ids
+                ),
+                "closed_runway_ids": sorted(
+                    self.closed_runway_ids
+                ),
+                "unavailable_aircraft_ids": sorted(
+                    self.unavailable_aircraft_ids
+                ),
+                "service_time_multipliers": dict(
+                    self.service_time_multipliers
+                ),
+            },
         }
 
     def get_action_mask(self, high_level_action: Optional[int] = None) -> Dict[str, Any]:
@@ -426,6 +499,14 @@ class CarrierAircraftSchedulingEnv:
     ) -> List[Any]:
         action_name = HIGH_LEVEL_ACTIONS.get(high_level)
         if action_name == "R":
+            if self.deck_layout is None:
+                return [
+                    spot_id
+                    for spot_id, occupied_by in enumerate(
+                        self.parking_occupancy
+                    )
+                    if occupied_by is None
+                ][:1]
             options = [
                 (route[2], spot_id)
                 for spot_id, occupied_by in enumerate(self.parking_occupancy)
@@ -442,7 +523,15 @@ class CarrierAircraftSchedulingEnv:
             return [spot_id for _, spot_id in sorted(options)]
         if action_name == "L":
             if self.deck_layout is None:
-                return [0]
+                for runway_id in range(
+                    int(self.config["num_launch_positions"])
+                ):
+                    if self._launch_runway_available(
+                        runway_id,
+                        aircraft_id,
+                    ):
+                        return [runway_id]
+                return []
             deadline = min(
                 (self.current_wave_index + 1) * self.wave_interval,
                 self.simulation_duration,
@@ -476,6 +565,8 @@ class CarrierAircraftSchedulingEnv:
             for vehicle in self.service_vehicles
             if vehicle.service_type == service_type
             and vehicle.busy_aircraft_id is None
+            and vehicle.vehicle_id
+            not in self.unavailable_vehicle_ids
             and (
                 route := self._preview_service_vehicle_route(
                     vehicle,
@@ -512,6 +603,7 @@ class CarrierAircraftSchedulingEnv:
             int(
                 len(candidates["F"]) > 0
                 and self.free_fuel_servers > 0
+                and bool(self._available_service_vehicles("fuel"))
                 and self._personnel_available(
                     int(self.config["fuel_personnel_required"])
                 )
@@ -519,6 +611,7 @@ class CarrierAircraftSchedulingEnv:
             int(
                 len(candidates["M"]) > 0
                 and self.free_arm_vehicles > 0
+                and bool(self._available_service_vehicles("arm"))
                 and self.free_ammo_transport_vehicles > 0
                 and self.free_lower_weapon_lifts > 0
                 and self._personnel_available(
@@ -529,6 +622,9 @@ class CarrierAircraftSchedulingEnv:
             int(
                 len(candidates["I"]) > 0
                 and self.free_inspection_vehicles > 0
+                and bool(
+                    self._available_service_vehicles("inspection")
+                )
                 and self._personnel_available(
                     int(self.config["inspection_personnel_required"])
                 )
@@ -632,6 +728,13 @@ class CarrierAircraftSchedulingEnv:
             ),
             "group_metrics": group_metrics,
             "cbs_replan": dict(self.cbs_replan_stats),
+            "disruptions": {
+                **self.disruption_metrics,
+                "started_by_kind": dict(
+                    self.disruption_metrics["started_by_kind"]
+                ),
+                "active_at_end": len(self.active_disruptions),
+            },
         }
 
     def _advance_time_to_next_event(self) -> Tuple[float, Dict[str, int]]:
@@ -680,6 +783,12 @@ class CarrierAircraftSchedulingEnv:
             if event.event_type == "simulation_end":
                 self._record_missed_sorties(self.current_wave_index)
                 self._log_event("simulation_end")
+                continue
+            if event.event_type in (
+                "disruption_start",
+                "disruption_end",
+            ):
+                self._process_disruption_event(event)
                 continue
             if event.event_type == "clearance_done":
                 self._log_event("clearance_done")
@@ -883,7 +992,7 @@ class CarrierAircraftSchedulingEnv:
         duration = max(
             float(self.config["min_process_time"]),
             (1.0 - aircraft.fuel_level) / rate,
-        )
+        ) * self.service_time_multipliers["fuel"]
         vehicle, travel_duration = self._dispatch_service_vehicle(
             "fuel",
             aircraft_id,
@@ -917,7 +1026,7 @@ class CarrierAircraftSchedulingEnv:
         duration = self._sample_duration(
             "inspection_time_mean",
             "inspection_time_std",
-        )
+        ) * self.service_time_multipliers["inspection"]
         vehicle, travel_duration = self._dispatch_service_vehicle(
             "inspection",
             aircraft_id,
@@ -950,11 +1059,15 @@ class CarrierAircraftSchedulingEnv:
         vehicle_id: Optional[str] = None,
     ) -> None:
         aircraft = self.aircraft[aircraft_id]
-        first_stage_duration = self._sample_ammo_extract_time() + self._sample_duration(
-            "lower_lift_time_mean",
-            "lower_lift_time_std",
+        arm_multiplier = self.service_time_multipliers["arm"]
+        first_stage_duration = arm_multiplier * (
+            self._sample_ammo_extract_time()
+            + self._sample_duration(
+                "lower_lift_time_mean",
+                "lower_lift_time_std",
+            )
         )
-        deck_stage_duration = (
+        deck_stage_duration = arm_multiplier * (
             self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
             + self._sample_arming_duration(aircraft.arm_quantity_required)
         )
@@ -1056,11 +1169,13 @@ class CarrierAircraftSchedulingEnv:
             0.0,
             (aircraft.arm_vehicle_ready_time or self.time) - self.time,
         )
-        duration = (
+        operation_duration = self.service_time_multipliers[
+            "arm"
+        ] * (
             self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
-            + vehicle_wait
             + self._sample_arming_duration(aircraft.arm_quantity_required)
         )
+        duration = operation_duration + vehicle_wait
         aircraft.arm_stage = 3
         aircraft.deck_arm_start = self.time
         aircraft.arm_remaining = duration
@@ -1081,6 +1196,12 @@ class CarrierAircraftSchedulingEnv:
         launch_capacity_available = (
             self.wave_records[-1]["launches_started"] < self.group_size
         )
+        launch_runway_available = any(
+            self._launch_runway_available(runway_id)
+            for runway_id in range(
+                int(self.config["num_launch_positions"])
+            )
+        )
         for aircraft_id, aircraft in enumerate(self.aircraft):
             if (
                 aircraft.pending_recovery
@@ -1091,6 +1212,8 @@ class CarrierAircraftSchedulingEnv:
                 )
             ):
                 candidates["R"].append(aircraft_id)
+            if aircraft_id in self.unavailable_aircraft_ids:
+                continue
             if (
                 not aircraft.is_airborne
                 and aircraft.parking_status == 2
@@ -1126,6 +1249,7 @@ class CarrierAircraftSchedulingEnv:
             )
             if (
                 launch_capacity_available
+                and launch_runway_available
                 and not aircraft.is_airborne
                 and aircraft.parking_status == 2
                 and aircraft.fuel_status == 2
@@ -1154,6 +1278,131 @@ class CarrierAircraftSchedulingEnv:
             self._push_event(wave_index * self.wave_interval, "wave_start", -1)
             wave_index += 1
         self._push_event(self.simulation_duration, "simulation_end", -1)
+
+    def _schedule_disruption_events(self) -> None:
+        self.disruptions_by_id = {
+            spec.disruption_id: spec
+            for spec in self.disruption_schedule
+        }
+        for spec in self.disruption_schedule:
+            self._validate_disruption_spec(spec)
+            if spec.start_time <= self.time:
+                self._process_disruption_event(
+                    Event(
+                        time=self.time,
+                        sequence=0,
+                        event_type="disruption_start",
+                        aircraft_id=spec.disruption_id,
+                    )
+                )
+            else:
+                self._push_event(
+                    spec.start_time,
+                    "disruption_start",
+                    spec.disruption_id,
+                )
+            self._push_event(
+                spec.end_time,
+                "disruption_end",
+                spec.disruption_id,
+            )
+
+    def _validate_disruption_spec(
+        self,
+        spec: DisruptionSpec,
+    ) -> None:
+        if spec.kind == "vehicle_outage":
+            vehicle_ids = {
+                vehicle.vehicle_id
+                for vehicle in self.service_vehicles
+            }
+            if str(spec.target) not in vehicle_ids:
+                raise ValueError(
+                    f"unknown disruption vehicle: {spec.target}"
+                )
+        elif spec.kind == "runway_closure":
+            runway_id = int(spec.target)
+            if not 0 <= runway_id < int(
+                self.config["num_launch_positions"]
+            ):
+                raise ValueError(
+                    f"unknown disruption runway: {spec.target}"
+                )
+        elif spec.kind == "aircraft_hold":
+            aircraft_id = int(spec.target)
+            if not 0 <= aircraft_id < self.num_aircraft:
+                raise ValueError(
+                    f"unknown disruption aircraft: {spec.target}"
+                )
+        elif (
+            spec.kind == "service_slowdown"
+            and str(spec.target)
+            not in ("fuel", "inspection", "arm", "all")
+        ):
+            raise ValueError(
+                f"unknown slowdown service: {spec.target}"
+            )
+
+    def _process_disruption_event(self, event: Event) -> None:
+        spec = self.disruptions_by_id[event.aircraft_id]
+        if event.event_type == "disruption_start":
+            self.active_disruptions[spec.disruption_id] = spec
+            self.disruption_metrics["started"] += 1
+            by_kind = self.disruption_metrics["started_by_kind"]
+            by_kind[spec.kind] = by_kind.get(spec.kind, 0) + 1
+        else:
+            self.active_disruptions.pop(
+                spec.disruption_id,
+                None,
+            )
+            self.disruption_metrics["ended"] += 1
+        self._refresh_disruption_state()
+        self._invalidate_planning_cache()
+        self._log_event(
+            event.event_type,
+            disruption_id=spec.disruption_id,
+            disruption_kind=spec.kind,
+            disruption_target=spec.target,
+            multiplier=spec.multiplier,
+        )
+
+    def _refresh_disruption_state(self) -> None:
+        active = tuple(self.active_disruptions.values())
+        self.unavailable_vehicle_ids = {
+            str(spec.target)
+            for spec in active
+            if spec.kind == "vehicle_outage"
+        }
+        self.closed_runway_ids = {
+            int(spec.target)
+            for spec in active
+            if spec.kind == "runway_closure"
+        }
+        self.unavailable_aircraft_ids = {
+            int(spec.target)
+            for spec in active
+            if spec.kind == "aircraft_hold"
+        }
+        multipliers = {
+            "fuel": 1.0,
+            "inspection": 1.0,
+            "arm": 1.0,
+        }
+        for spec in active:
+            if spec.kind != "service_slowdown":
+                continue
+            target = str(spec.target)
+            services = (
+                tuple(multipliers)
+                if target == "all"
+                else (target,)
+            )
+            for service_type in services:
+                multipliers[service_type] = max(
+                    multipliers[service_type],
+                    spec.multiplier,
+                )
+        self.service_time_multipliers = multipliers
 
     def _start_wave(self, wave_index: int) -> None:
         self._invalidate_planning_cache()
@@ -1568,13 +1817,21 @@ class CarrierAircraftSchedulingEnv:
                 )
         return vehicles
 
-    def _available_tow_vehicles(self) -> List[ServiceVehicleRecord]:
+    def _available_service_vehicles(
+        self,
+        service_type: str,
+    ) -> List[ServiceVehicleRecord]:
         return [
             vehicle
             for vehicle in self.service_vehicles
-            if vehicle.service_type == "tractor"
+            if vehicle.service_type == service_type
             and vehicle.busy_aircraft_id is None
+            and vehicle.vehicle_id
+            not in self.unavailable_vehicle_ids
         ]
+
+    def _available_tow_vehicles(self) -> List[ServiceVehicleRecord]:
+        return self._available_service_vehicles("tractor")
 
     def _preview_tow_vehicle(
         self,
@@ -2001,6 +2258,8 @@ class CarrierAircraftSchedulingEnv:
             for vehicle in self.service_vehicles
             if vehicle.service_type == service_type
             and vehicle.busy_aircraft_id is None
+            and vehicle.vehicle_id
+            not in self.unavailable_vehicle_ids
             and (vehicle_id is None or vehicle.vehicle_id == vehicle_id)
         ]
         if not available:
@@ -2096,12 +2355,16 @@ class CarrierAircraftSchedulingEnv:
             for vehicle in self.service_vehicles
             if vehicle.service_type == service_type
             and vehicle.busy_aircraft_id is None
+            and vehicle.vehicle_id
+            not in self.unavailable_vehicle_ids
         ]
         if not available:
             available = [
                 vehicle
                 for vehicle in self.service_vehicles
                 if vehicle.service_type == service_type
+                and vehicle.vehicle_id
+                not in self.unavailable_vehicle_ids
             ]
         aircraft = self.aircraft[aircraft_id]
         if aircraft.spot_id < 0:
@@ -2186,6 +2449,8 @@ class CarrierAircraftSchedulingEnv:
         runway_id: int,
         aircraft_id: Optional[int] = None,
     ) -> bool:
+        if runway_id in self.closed_runway_ids:
+            return False
         if self.deck_layout is None or self.deck_occupancy is None:
             return True
         if not 0 <= runway_id < len(self.deck_layout.launch_nodes):
@@ -2425,9 +2690,13 @@ class CarrierAircraftSchedulingEnv:
         action_name = HIGH_LEVEL_ACTIONS[high_level]
         candidates = self.get_target_candidates(high_level, aircraft_id)
         if action_name in ("R", "L"):
-            return target_id is None or target_id in candidates
+            return bool(candidates) and (
+                target_id is None or target_id in candidates
+            )
         if action_name in ("F", "M", "I"):
-            return vehicle_id is None or vehicle_id in candidates
+            return bool(candidates) and (
+                vehicle_id is None or vehicle_id in candidates
+            )
         return True
 
     def _all_launched(self) -> bool:
