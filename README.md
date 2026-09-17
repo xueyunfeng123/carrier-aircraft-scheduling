@@ -291,6 +291,9 @@ python -m scripts.benchmark_non_rl \
 
 # 固定批次路径规划：顺序 Cooperative A* 与最优 CBS 对照
 python -m scripts.benchmark_cbs_paths
+
+# 相同 RL checkpoint 下关闭/启用 CBS 的高负载配对实验
+./scripts/run_rl_cbs_experiment.sh
 ```
 
 RL 策略采用“作业类型→飞机→目标停机位/跑道/车辆”的三层 masked
@@ -320,9 +323,10 @@ Heuristic 平均增加 2.92 架次，为 24 胜、1 平、0 负；相对 CP-SAT
 
 `SpaceTimeTrafficPlanner.plan_batch()` 使用 CBS 联合规划固定的一批移动
 请求，以路径持续时间之和（SOC）为目标。该接口保留已有预约作为不可变
-障碍，并在找到整批无冲突解后一次性提交预约。当前主仿真仍按调度动作
-逐个启动移动，因此该保证只适用于显式提交给 `plan_batch()` 的固定批次，
-不代表整个多波次调度全局最优。
+障碍，并在找到整批无冲突解后一次性提交预约。传入 `--cbs-replan` 时，
+环境会联合重规划同一仿真时刻尚未执行的保障车和载机牵引路径；只有
+SOC 严格下降时才替换原路径。牵引车接近飞机的前置路径仍保持固定，
+该保证不代表整个多波次调度全局最优。
 
 实验结果建议写入 `outputs/`：
 

@@ -1,0 +1,3 @@
+scenario,checkpoint,seeds,runs,rl_without_cbs_mean,rl_with_cbs_mean,mean_delta,cbs_calls,cbs_improved_batches,cbs_fallbacks,cbs_soc_before,cbs_soc_after
+60_minute_12_wave,rl_learned_prior_ppo,10007,1,120.00,120.00,0.00,266,0,0,2425.0,2425.0
+47.5_minute_12_wave,rl_multiload_bc,62001-62010,10,101.00,101.00,0.00,2104,0,0,17986.0,17986.0

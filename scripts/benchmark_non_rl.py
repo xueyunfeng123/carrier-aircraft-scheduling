@@ -52,6 +52,12 @@ def main() -> None:
     parser.add_argument("--rl-target-rank-prior", type=float)
     parser.add_argument("--rl-low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--rl-disable-low-rank-prior", action="store_true")
+    parser.add_argument("--cbs-replan", action="store_true")
+    parser.add_argument(
+        "--cbs-max-expanded-nodes",
+        type=int,
+        default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
+    )
     parser.add_argument("--max-steps", type=int, default=100000)
     parser.add_argument("--output", default="outputs/non_rl_benchmark.csv")
     parser.add_argument(
@@ -78,6 +84,10 @@ def main() -> None:
         config["wave_interval"] = float(interval)
         config["simulation_duration"] = float(interval) * args.waves
         config["spatial_graph_enabled"] = not args.disable_spatial_graph
+        config["cbs_replan_enabled"] = args.cbs_replan
+        config["cbs_max_expanded_nodes"] = (
+            args.cbs_max_expanded_nodes
+        )
         capacity = args.waves * int(config["group_size"])
 
         for solver_name in solver_names:

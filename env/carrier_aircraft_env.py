@@ -13,6 +13,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from env.cbs_planner import CBSExpansionLimitError, RouteRequest
 from env.config import ACTION_TO_INDEX, DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
 from env.project_deck_graph import (
     DeckOccupancy,
@@ -275,6 +276,14 @@ class CarrierAircraftSchedulingEnv:
         self.service_vehicles = self._build_service_vehicle_fleet()
         self.active_service_vehicles: Dict[Tuple[str, int], str] = {}
         self.active_tow_vehicles: Dict[int, str] = {}
+        self._cbs_route_dispatch_times: Dict[str, float] = {}
+        self.cbs_replan_stats: Dict[str, float] = {
+            "calls": 0,
+            "improved_batches": 0,
+            "fallbacks": 0,
+            "sum_of_costs_before": 0.0,
+            "sum_of_costs_after": 0.0,
+        }
 
         self.total_reward = 0.0
         self.done = False
@@ -622,6 +631,7 @@ class CarrierAircraftSchedulingEnv:
                 else 0.0
             ),
             "group_metrics": group_metrics,
+            "cbs_replan": dict(self.cbs_replan_stats),
         }
 
     def _advance_time_to_next_event(self) -> Tuple[float, Dict[str, int]]:
@@ -858,6 +868,8 @@ class CarrierAircraftSchedulingEnv:
             "recover_done",
             aircraft_id,
         )
+        if self.spatial_graph_enabled:
+            self._register_cbs_route(f"tow:{aircraft_id}")
 
     def _start_fueling(
         self,
@@ -894,6 +906,7 @@ class CarrierAircraftSchedulingEnv:
             "fuel_done",
             aircraft_id,
         )
+        self._register_cbs_route(vehicle.vehicle_id)
 
     def _start_inspection(
         self,
@@ -929,6 +942,7 @@ class CarrierAircraftSchedulingEnv:
             "inspection_done",
             aircraft_id,
         )
+        self._register_cbs_route(vehicle.vehicle_id)
 
     def _start_arming(
         self,
@@ -971,6 +985,7 @@ class CarrierAircraftSchedulingEnv:
             vehicle_travel_duration=vehicle_travel_duration,
         )
         self._push_event(self.time + first_stage_duration, "ammo_to_assembly_done", aircraft_id)
+        self._register_cbs_route(vehicle.vehicle_id)
 
     def _start_launch(
         self,
@@ -1012,6 +1027,7 @@ class CarrierAircraftSchedulingEnv:
                 "taxi_to_launch_done",
                 aircraft_id,
             )
+            self._register_cbs_route(f"tow:{aircraft_id}")
         else:
             aircraft.launch_start = self.time
             self._push_event(
@@ -1706,6 +1722,273 @@ class CarrierAircraftSchedulingEnv:
         )
         tractor.node_id = node_id
         tractor.busy_aircraft_id = None
+
+    def _register_cbs_route(self, entity_id: str) -> None:
+        if (
+            not bool(self.config["cbs_replan_enabled"])
+            or self.traffic_planner is None
+            or entity_id not in self.traffic_planner.routes
+        ):
+            return
+        self._cbs_route_dispatch_times[entity_id] = self.time
+        self._replan_current_cbs_batch()
+
+    def _replan_current_cbs_batch(self) -> None:
+        if self.traffic_planner is None:
+            return
+        entity_ids = sorted(
+            entity_id
+            for entity_id, dispatch_time in (
+                self._cbs_route_dispatch_times.items()
+            )
+            if dispatch_time == self.time
+            and entity_id in self.traffic_planner.routes
+        )
+        if len(entity_ids) < 2:
+            return
+
+        old_routes = {
+            entity_id: self.traffic_planner.routes[entity_id]
+            for entity_id in entity_ids
+        }
+        requests = tuple(
+            RouteRequest(
+                entity_id=route.entity_id,
+                source=route.source,
+                target=route.target,
+                start_time=route.start_time,
+                shared_nodes=(route.source, route.target),
+            )
+            for route in old_routes.values()
+        )
+        for entity_id in entity_ids:
+            self.traffic_planner.release(entity_id)
+
+        self.cbs_replan_stats["calls"] += 1
+        expansion_limit = int(
+            self.config["cbs_max_expanded_nodes"]
+        )
+        try:
+            plan = self.traffic_planner.plan_batch(
+                requests,
+                reserve=True,
+                max_expanded_nodes=(
+                    expansion_limit
+                    if expansion_limit > 0
+                    else None
+                ),
+            )
+        except CBSExpansionLimitError:
+            plan = None
+        except Exception:
+            self._restore_traffic_routes(old_routes, requests)
+            raise
+
+        if plan is None:
+            self._restore_traffic_routes(old_routes, requests)
+            self.cbs_replan_stats["fallbacks"] += 1
+            self._log_event(
+                "cbs_replan_fallback",
+                batch_size=len(requests),
+            )
+            return
+
+        old_soc = sum(
+            route.duration
+            for route in old_routes.values()
+        )
+        self.cbs_replan_stats["sum_of_costs_before"] += old_soc
+        if plan.sum_of_costs >= old_soc - 1.0e-9:
+            for entity_id in entity_ids:
+                self.traffic_planner.release(entity_id)
+            self._restore_traffic_routes(old_routes, requests)
+            self.cbs_replan_stats["sum_of_costs_after"] += old_soc
+            self._log_event(
+                "cbs_replan_no_improvement",
+                batch_size=len(requests),
+                sum_of_costs=old_soc,
+                expanded_nodes=plan.expanded_nodes,
+            )
+            return
+
+        self._apply_cbs_route_updates(
+            old_routes,
+            plan.routes,
+        )
+        self.cbs_replan_stats["sum_of_costs_after"] += (
+            plan.sum_of_costs
+        )
+        self.cbs_replan_stats["improved_batches"] += 1
+        self._log_event(
+            "cbs_replan",
+            batch_size=len(requests),
+            sum_of_costs_before=old_soc,
+            sum_of_costs_after=plan.sum_of_costs,
+            expanded_nodes=plan.expanded_nodes,
+        )
+
+    def _restore_traffic_routes(
+        self,
+        routes: Dict[str, TimedRoute],
+        requests: Tuple[RouteRequest, ...],
+    ) -> None:
+        if self.traffic_planner is None:
+            return
+        request_by_entity = {
+            request.entity_id: request
+            for request in requests
+        }
+        for entity_id, route in routes.items():
+            self.traffic_planner.reserve(
+                route,
+                request_by_entity[entity_id].shared_nodes,
+            )
+
+    def _apply_cbs_route_updates(
+        self,
+        old_routes: Dict[str, TimedRoute],
+        new_routes: Dict[str, TimedRoute],
+    ) -> None:
+        event_times_changed = False
+        for entity_id, old_route in old_routes.items():
+            new_route = new_routes[entity_id]
+            end_time_delta = (
+                new_route.end_time - old_route.end_time
+            )
+            if entity_id.startswith("tow:"):
+                aircraft_id = int(entity_id.split(":", 1)[1])
+                reservation = self.active_deck_routes[aircraft_id]
+                updated = DeckRouteReservation(
+                    aircraft_id=reservation.aircraft_id,
+                    operation=reservation.operation,
+                    source=reservation.source,
+                    target=reservation.target,
+                    path=new_route.nodes,
+                    distance=reservation.distance + end_time_delta,
+                )
+                self.active_deck_routes[aircraft_id] = updated
+                if self.deck_occupancy is None:
+                    raise RuntimeError(
+                        "CBS tow route requires deck occupancy"
+                    )
+                self.deck_occupancy.active_routes[
+                    aircraft_id
+                ] = updated
+                event_type = (
+                    "taxi_to_launch_done"
+                    if reservation.operation == "launch_taxi"
+                    else "recover_done"
+                )
+                self._shift_scheduled_event(
+                    event_type,
+                    aircraft_id,
+                    end_time_delta,
+                )
+                event_times_changed = True
+                continue
+
+            assignment = next(
+                (
+                    key
+                    for key, vehicle_id in (
+                        self.active_service_vehicles.items()
+                    )
+                    if vehicle_id == entity_id
+                ),
+                None,
+            )
+            if assignment is None:
+                raise RuntimeError(
+                    "CBS service route has no active assignment"
+                )
+            service_type, aircraft_id = assignment
+            aircraft = self.aircraft[aircraft_id]
+            if service_type == "fuel":
+                aircraft.fuel_remaining = max(
+                    0.0,
+                    aircraft.fuel_remaining + end_time_delta,
+                )
+                self._shift_scheduled_event(
+                    "fuel_done",
+                    aircraft_id,
+                    end_time_delta,
+                )
+                event_times_changed = True
+            elif service_type == "inspection":
+                aircraft.inspection_remaining = max(
+                    0.0,
+                    aircraft.inspection_remaining + end_time_delta,
+                )
+                self._shift_scheduled_event(
+                    "inspection_done",
+                    aircraft_id,
+                    end_time_delta,
+                )
+                event_times_changed = True
+            elif service_type == "arm":
+                ammo_events = [
+                    event
+                    for event in self.event_queue
+                    if event.event_type
+                    == "ammo_to_assembly_done"
+                    and event.aircraft_id == aircraft_id
+                ]
+                if len(ammo_events) != 1:
+                    raise RuntimeError(
+                        "CBS arm route update expected one "
+                        "ammunition event"
+                    )
+                first_stage_remaining = max(
+                    0.0,
+                    ammo_events[0].time - self.time,
+                )
+                old_vehicle_remaining = max(
+                    0.0,
+                    old_route.end_time - self.time,
+                )
+                deck_stage_remaining = max(
+                    0.0,
+                    aircraft.arm_remaining
+                    - max(
+                        first_stage_remaining,
+                        old_vehicle_remaining,
+                    ),
+                )
+                new_vehicle_remaining = max(
+                    0.0,
+                    new_route.end_time - self.time,
+                )
+                aircraft.arm_vehicle_ready_time = (
+                    new_route.end_time
+                )
+                aircraft.arm_remaining = (
+                    max(
+                        first_stage_remaining,
+                        new_vehicle_remaining,
+                    )
+                    + deck_stage_remaining
+                )
+        if event_times_changed:
+            heapq.heapify(self.event_queue)
+
+    def _shift_scheduled_event(
+        self,
+        event_type: str,
+        aircraft_id: int,
+        delta: float,
+    ) -> None:
+        matches = [
+            event
+            for event in self.event_queue
+            if event.event_type == event_type
+            and event.aircraft_id == aircraft_id
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "CBS route update expected one completion event: "
+                f"{event_type}, aircraft {aircraft_id}"
+            )
+        matches[0].time += delta
 
     def _dispatch_service_vehicle(
         self,

@@ -1,0 +1,2 @@
+run,seed,total_sorties_completed,total_missed_sorties,total_reward,cbs_calls,cbs_improved_batches,cbs_fallbacks,cbs_sum_of_costs_before,cbs_sum_of_costs_after
+1,10007,120,120,-445.60000000000036,266,0,0,2425.0,2425.0

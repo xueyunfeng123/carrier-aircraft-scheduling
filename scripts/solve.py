@@ -85,6 +85,7 @@ def run_episode(
         "sortie_generation_rate_per_hour": metrics["sortie_generation_rate_per_hour"],
         "sortie_completion_rate": metrics["sortie_completion_rate"],
         "group_metrics": metrics["group_metrics"],
+        "cbs_replan": metrics["cbs_replan"],
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
         "missed_sortie_records": env.get_missed_sortie_records(),
@@ -108,6 +109,16 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         args,
         "deck_edge_travel_time",
         DEFAULT_CONFIG["deck_edge_travel_time"],
+    )
+    config["cbs_replan_enabled"] = getattr(
+        args,
+        "cbs_replan",
+        DEFAULT_CONFIG["cbs_replan_enabled"],
+    )
+    config["cbs_max_expanded_nodes"] = getattr(
+        args,
+        "cbs_max_expanded_nodes",
+        DEFAULT_CONFIG["cbs_max_expanded_nodes"],
     )
     config["num_ammo_transport_vehicles"] = args.num_ammo_transport_vehicles
     config["num_lower_weapon_lifts"] = args.num_lower_weapon_lifts
@@ -195,6 +206,12 @@ def main() -> None:
         "--deck-edge-travel-time",
         type=float,
         default=DEFAULT_CONFIG["deck_edge_travel_time"],
+    )
+    parser.add_argument("--cbs-replan", action="store_true")
+    parser.add_argument(
+        "--cbs-max-expanded-nodes",
+        type=int,
+        default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
     )
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
     parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)

@@ -28,6 +28,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "deck_edge_travel_time": 1.0,
     "traffic_time_step": 1.0,
     "traffic_planning_horizon": 180.0,
+    "cbs_replan_enabled": False,
+    "cbs_max_expanded_nodes": 2000,
     "parking_interference_clearance": 2.0,
     "runway_interference_clearance": 0.5,
     "wave_interval": 120.0,

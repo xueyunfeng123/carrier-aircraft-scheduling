@@ -404,7 +404,7 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   target/vehicle candidate features, 20 global features, and observation
   schema version 9.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 66 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+- All 69 unit tests pass. In the corrected fixed seed-10007, 60-minute,
   12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
   99/113/118/106/118/119 launches.
@@ -459,6 +459,21 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   47.5/52.5/57.5/62.5/67.5-minute intervals, `rl_multiload_bc` averages 2.92
   more launches than Heuristic (24 wins, 1 tie) and matches CP-SAT within
   0.24 launches on average.
+
+### `experiment/cbs-path-planning`
+
+- Adds optimal sum-of-costs CBS for fixed batches on top of the existing
+  space-time A* low-level search.
+- `--cbs-replan` jointly replans service-vehicle and aircraft-towing routes
+  dispatched at the same simulation time. Tractor approach routes remain
+  fixed.
+- New routes replace prioritized reservations only when batch SOC strictly
+  decreases; timeout or infeasibility restores the original routes.
+- The deterministic deck bottleneck benchmark improves SOC from 11 to 10 and
+  makespan from 8 to 6.
+- The retained RL checkpoints show no strict batch-SOC improvement in the
+  tested 60-minute and 47.5-minute scenarios, so do not claim a sortie gain
+  from CBS.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

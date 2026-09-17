@@ -26,6 +26,12 @@ def main() -> None:
     parser.add_argument("--target-rank-prior", type=float)
     parser.add_argument("--low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--disable-low-rank-prior", action="store_true")
+    parser.add_argument("--cbs-replan", action="store_true")
+    parser.add_argument(
+        "--cbs-max-expanded-nodes",
+        type=int,
+        default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--output", type=str, default="")
@@ -93,6 +99,21 @@ def main() -> None:
                     "total_missed_sorties"
                 ],
                 "total_reward": result["total_reward"],
+                "cbs_calls": int(
+                    result["cbs_replan"]["calls"]
+                ),
+                "cbs_improved_batches": int(
+                    result["cbs_replan"]["improved_batches"]
+                ),
+                "cbs_fallbacks": int(
+                    result["cbs_replan"]["fallbacks"]
+                ),
+                "cbs_sum_of_costs_before": result[
+                    "cbs_replan"
+                ]["sum_of_costs_before"],
+                "cbs_sum_of_costs_after": result[
+                    "cbs_replan"
+                ]["sum_of_costs_after"],
             }
             for run_id, result in enumerate(results, start=1)
         ]

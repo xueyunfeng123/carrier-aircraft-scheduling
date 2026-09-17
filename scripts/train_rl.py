@@ -74,6 +74,12 @@ def main() -> None:
     parser.add_argument("--train-wave-intervals", type=float, nargs="+")
     parser.add_argument("--validation-wave-intervals", type=float, nargs="+")
     parser.add_argument("--waves-per-scenario", type=int, default=12)
+    parser.add_argument("--cbs-replan", action="store_true")
+    parser.add_argument(
+        "--cbs-max-expanded-nodes",
+        type=int,
+        default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
+    )
     parser.add_argument("--num-ammo-transport-vehicles", type=int, default=DEFAULT_CONFIG["num_ammo_transport_vehicles"])
     parser.add_argument("--num-lower-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_lower_weapon_lifts"])
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])
