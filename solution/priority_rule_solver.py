@@ -98,7 +98,7 @@ class PriorityRuleSolver:
                     "fuel",
                     aircraft_id,
                 )
-                + self.env.service_time_multipliers["fuel"] * (
+                + (
                     1.0 - self.env.aircraft[aircraft_id].fuel_level
                 ) / float(config["fuel_rate_per_minute"])
             )
@@ -108,8 +108,7 @@ class PriorityRuleSolver:
                     "inspection",
                     aircraft_id,
                 )
-                + self.env.service_time_multipliers["inspection"]
-                * float(config["inspection_time_mean"])
+                + float(config["inspection_time_mean"])
             )
         if high_level == ACTION_LAUNCH:
             return self.env._expected_launch_duration(aircraft_id)
@@ -120,18 +119,14 @@ class PriorityRuleSolver:
             + float(config["ammo_extract_time_max"])
         ) / 2.0
         return (
-            self.env.service_time_multipliers["arm"]
-            * (
-                extract_mean
-                + float(config["lower_lift_time_mean"])
-                + float(config["upper_lift_time_mean"])
-                + aircraft.arm_quantity_required
-                * float(config["arm_unit_time_mean"])
-            )
+            extract_mean
+            + float(config["lower_lift_time_mean"])
+            + float(config["upper_lift_time_mean"])
             + self.env._expected_service_vehicle_travel(
                 "arm",
                 aircraft_id,
             )
+            + aircraft.arm_quantity_required * float(config["arm_unit_time_mean"])
         )
 
     def _launch_deadline(self, aircraft_id: int) -> float:

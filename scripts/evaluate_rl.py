@@ -32,11 +32,6 @@ def main() -> None:
         type=int,
         default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
     )
-    parser.add_argument(
-        "--disruption-profile",
-        choices=("none", "light", "medium", "heavy"),
-        default=DEFAULT_CONFIG["disruption_profile"],
-    )
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--output", type=str, default="")
@@ -104,15 +99,6 @@ def main() -> None:
                     "total_missed_sorties"
                 ],
                 "total_reward": result["total_reward"],
-                "disruption_profile": result["disruptions"][
-                    "profile"
-                ],
-                "disruptions_started": result["disruptions"][
-                    "started"
-                ],
-                "disruptions_ended": result["disruptions"][
-                    "ended"
-                ],
                 "cbs_calls": int(
                     result["cbs_replan"]["calls"]
                 ),

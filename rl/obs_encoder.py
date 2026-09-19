@@ -199,15 +199,10 @@ def _encode_global_features(
         recovery_pressure,
         time_to_next_wave / wave_interval,
         resources["recovery_channels"] / max(1.0, float(config["num_recovery_channels"])),
-        resources["fuel_servers"]
-        / max(1.0, float(config["num_fuel_servers"]))
-        / env.service_time_multipliers["fuel"],
+        resources["fuel_servers"] / max(1.0, float(config["num_fuel_servers"])),
         resources["inspection_vehicles"]
-        / max(1.0, float(config["num_inspection_vehicles"]))
-        / env.service_time_multipliers["inspection"],
-        resources["arm_vehicles"]
-        / max(1.0, float(config["num_arm_vehicles"]))
-        / env.service_time_multipliers["arm"],
+        / max(1.0, float(config["num_inspection_vehicles"])),
+        resources["arm_vehicles"] / max(1.0, float(config["num_arm_vehicles"])),
         resources["ammo_transport_vehicles"] / max(1.0, float(config["num_ammo_transport_vehicles"])),
         resources["lower_weapon_lifts"] / max(1.0, float(config["num_lower_weapon_lifts"])),
         resources["upper_weapon_lifts"] / max(1.0, float(config["num_upper_weapon_lifts"])),
@@ -215,7 +210,7 @@ def _encode_global_features(
         resources["launch_channels"] / max(1.0, float(config["num_launch_channels"])),
         resources["free_parking_spots"] / max(1.0, float(config["num_parking_spots"])),
         float(deck["free_pathway_fraction"]),
-        float(state["event_queue_size"]) / 100.0,
+        len(env.event_queue) / 100.0,
         sum(1 for aircraft in env.aircraft if aircraft.is_airborne) / max(1, env.num_aircraft),
         sum(aircraft.sorties_completed for aircraft in env.aircraft) / max(1, env.num_aircraft * 12),
         sum(aircraft.missed_sorties for aircraft in env.aircraft) / max(1, env.num_aircraft * 12),
@@ -286,11 +281,8 @@ def _encode_targets(
             [
                 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                 float(
-                    runway_id not in env.closed_runway_ids
-                    and (
-                        env.deck_layout is None
-                        or not env.deck_occupancy.occupants[node_id]
-                    )
+                    env.deck_layout is None
+                    or not env.deck_occupancy.occupants[node_id]
                 ),
                 runway_id / max(1, launch_count - 1),
                 node_index.get(node_id, 0) / node_divisor,
@@ -321,11 +313,7 @@ def _encode_targets(
         target_features.append(
             [
                 *type_features,
-                float(
-                    vehicle.busy_aircraft_id is None
-                    and vehicle.vehicle_id
-                    not in env.unavailable_vehicle_ids
-                ),
+                float(vehicle.busy_aircraft_id is None),
                 local_index / max(1, service_counts[service_type] - 1),
                 node_index.get(vehicle.node_id, 0) / node_divisor,
                 0.0, 0.0, 0.0, 0.0,
