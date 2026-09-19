@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.obs_encoder import (
@@ -100,14 +100,173 @@ class RLSolver:
         )
 
     def choose_action(self) -> Optional[Dict[str, Any]]:
+        if self.deterministic:
+            ranked = self.rank_actions(top_k=1)
+            return ranked[0][0] if ranked else None
+
         encoded = encode_observation(self.env)
         if not any(encoded.high_mask):
             return None
         action, _, _ = self.trainer.select_action(
             encoded,
             self.env,
-            deterministic=self.deterministic,
+            deterministic=False,
         )
         action.pop("_target_mask", None)
         action.pop("_target_aux", None)
         return action
+
+    def rank_actions(
+        self,
+        top_k: int,
+        env: Optional[CarrierAircraftSchedulingEnv] = None,
+    ) -> List[Tuple[Dict[str, Any], float]]:
+        """Return joint actions from a legal hierarchical Top-K beam.
+
+        Each conditional level is restricted to ``top_k`` candidates before
+        the resulting joint actions are sorted by policy log probability.
+        """
+
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        target_env = env or self.env
+        encoded = encode_observation(target_env)
+        if not any(encoded.high_mask):
+            return []
+
+        from rl.model import select_low_action_logits
+        from rl.obs_encoder import (
+            apply_target_slot,
+            target_context_for_action,
+            to_torch_batch,
+        )
+
+        torch = self.torch
+        batch = to_torch_batch(encoded, self.device)
+        candidates: List[Tuple[Dict[str, Any], float]] = []
+        with torch.no_grad():
+            high_logits, low_logits, _ = self.model(
+                batch["aircraft"],
+                batch["global"],
+                batch["targets"],
+                batch["low_aux"],
+            )
+            high_log_probs = torch.log_softmax(
+                high_logits.masked_fill(~batch["high_mask"], -torch.inf),
+                dim=-1,
+            )[0]
+            high_ids = self._top_masked_indices(
+                high_log_probs,
+                batch["high_mask"][0],
+                top_k,
+            )
+            for high_id in high_ids:
+                high_action = torch.tensor(
+                    [high_id],
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                low_mask = batch["low_masks"][0, high_id]
+                selected_low_logits = select_low_action_logits(
+                    low_logits,
+                    high_action,
+                )[0]
+                low_log_probs = torch.log_softmax(
+                    selected_low_logits.masked_fill(
+                        ~low_mask,
+                        -torch.inf,
+                    ),
+                    dim=-1,
+                )
+                low_ids = self._top_masked_indices(
+                    low_log_probs,
+                    low_mask,
+                    top_k,
+                )
+                for low_id in low_ids:
+                    target_mask_values, target_aux_values = (
+                        target_context_for_action(
+                            target_env,
+                            encoded,
+                            high_id,
+                            low_id,
+                        )
+                    )
+                    target_mask = torch.tensor(
+                        [target_mask_values],
+                        dtype=torch.bool,
+                        device=self.device,
+                    )
+                    target_aux = torch.tensor(
+                        [target_aux_values],
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
+                    low_action = torch.tensor(
+                        [low_id],
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    _, _, target_logits, _ = (
+                        self.model.forward_with_targets(
+                            batch["aircraft"],
+                            batch["global"],
+                            batch["targets"],
+                            target_aux,
+                            high_action,
+                            low_action,
+                            batch["low_aux"],
+                        )
+                    )
+                    target_log_probs = torch.log_softmax(
+                        target_logits.masked_fill(
+                            ~target_mask,
+                            -torch.inf,
+                        ),
+                        dim=-1,
+                    )[0]
+                    target_ids = self._top_masked_indices(
+                        target_log_probs,
+                        target_mask[0],
+                        top_k,
+                    )
+                    for target_id in target_ids:
+                        action = apply_target_slot(
+                            encoded,
+                            {
+                                "high_level": high_id,
+                                "aircraft_id": low_id,
+                            },
+                            target_id,
+                        )
+                        log_probability = (
+                            high_log_probs[high_id]
+                            + low_log_probs[low_id]
+                            + target_log_probs[target_id]
+                        )
+                        candidates.append(
+                            (action, float(log_probability.item()))
+                        )
+
+        candidates.sort(
+            key=lambda item: (
+                -item[1],
+                item[0]["high_level"],
+                item[0]["aircraft_id"],
+                item[0]["target_slot"],
+            )
+        )
+        return candidates[:top_k]
+
+    def _top_masked_indices(self, values, mask, top_k: int) -> List[int]:
+        legal_count = int(mask.sum().item())
+        if legal_count == 0:
+            return []
+        count = min(top_k, legal_count)
+        return [
+            int(index)
+            for index in self.torch.topk(
+                values,
+                k=count,
+            ).indices.tolist()
+        ]

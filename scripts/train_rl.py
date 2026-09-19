@@ -36,6 +36,7 @@ from rl.obs_encoder import (
 )
 from rl.ppo_trainer import PPOTrainer
 from rl.rollout_buffer import RolloutBuffer
+from rl.scoring import readiness_potential
 from rl.train_config import PPOConfig
 from scripts.evaluation_defaults import (
     DEFAULT_EVALUATION_DURATION,
@@ -927,22 +928,6 @@ def step_with_shaping(env: CarrierAircraftSchedulingEnv, action, config: PPOConf
         * (config.gamma * after_progress - before_progress)
     )
     return shaped_reward, done
-
-
-def readiness_potential(env: CarrierAircraftSchedulingEnv) -> float:
-    service_progress = sum(
-        int(aircraft.fuel_status == 2)
-        + int(aircraft.inspection_status == 2)
-        + int(aircraft.arm_status == 2)
-        for aircraft in env.aircraft
-        if not aircraft.is_airborne
-        and aircraft.recovery_status == 2
-    )
-    completed_sorties = sum(
-        aircraft.sorties_completed
-        for aircraft in env.aircraft
-    )
-    return float(3 * completed_sorties + service_progress)
 
 
 def estimate_value(model, env: CarrierAircraftSchedulingEnv, device: str) -> float:

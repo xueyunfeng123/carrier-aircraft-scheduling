@@ -46,12 +46,20 @@ def main() -> None:
         help="run the matched control without deck routes or movement time",
     )
     parser.add_argument("--rl-checkpoint", type=str, default="")
+    parser.add_argument("--rl-beam-checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-label", type=str, default="rl")
+    parser.add_argument("--rl-beam-label", type=str, default="rl_beam")
     parser.add_argument("--rl-low-rank-prior", type=float)
     parser.add_argument("--rl-target-rank-prior", type=float)
     parser.add_argument("--rl-low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--rl-disable-low-rank-prior", action="store_true")
+    parser.add_argument("--beam-width", type=int, default=2)
+    parser.add_argument("--beam-expansion-k", type=int, default=2)
+    parser.add_argument("--beam-depth", type=int, default=2)
+    parser.add_argument("--beam-rollout-events", type=int, default=2)
+    parser.add_argument("--beam-rollout-samples", type=int, default=1)
+    parser.add_argument("--beam-search-seed", type=int, default=17)
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -72,6 +80,13 @@ def main() -> None:
         if not Path(args.rl_checkpoint).is_file():
             parser.error(f"RL checkpoint does not exist: {args.rl_checkpoint}")
         solver_names += ("rl",)
+    if args.rl_beam_checkpoint:
+        if not Path(args.rl_beam_checkpoint).is_file():
+            parser.error(
+                "RL beam checkpoint does not exist: "
+                f"{args.rl_beam_checkpoint}"
+            )
+        solver_names += ("rl_beam",)
 
     rows: List[Dict[str, Any]] = []
     detail_rows: List[Dict[str, Any]] = []
@@ -107,6 +122,26 @@ def main() -> None:
                     "disable_low_rank_prior": (
                         args.rl_disable_low_rank_prior
                     ),
+                }
+            elif solver_name == "rl_beam":
+                options = {
+                    "checkpoint": args.rl_beam_checkpoint,
+                    "device": args.rl_device,
+                    "deterministic": True,
+                    "low_rank_prior": args.rl_low_rank_prior,
+                    "target_rank_prior": args.rl_target_rank_prior,
+                    "low_rank_prior_scale": (
+                        args.rl_low_rank_prior_scale
+                    ),
+                    "disable_low_rank_prior": (
+                        args.rl_disable_low_rank_prior
+                    ),
+                    "beam_width": args.beam_width,
+                    "expansion_k": args.beam_expansion_k,
+                    "search_depth": args.beam_depth,
+                    "rollout_events": args.beam_rollout_events,
+                    "rollout_samples": args.beam_rollout_samples,
+                    "search_seed": args.beam_search_seed,
                 }
 
             totals: List[int] = []
@@ -147,7 +182,11 @@ def main() -> None:
                         "solver": (
                             args.rl_label
                             if solver_name == "rl"
-                            else solver_name
+                            else (
+                                args.rl_beam_label
+                                if solver_name == "rl_beam"
+                                else solver_name
+                            )
                         ),
                         "seed": args.seed + run_id,
                         "wave_interval": float(interval),
@@ -172,7 +211,15 @@ def main() -> None:
                 for values in zip(*wave_runs)
             ]
             row = {
-                "solver": args.rl_label if solver_name == "rl" else solver_name,
+                "solver": (
+                    args.rl_label
+                    if solver_name == "rl"
+                    else (
+                        args.rl_beam_label
+                        if solver_name == "rl_beam"
+                        else solver_name
+                    )
+                ),
                 "scenario_profile": config["scenario_profile"],
                 "spatial_graph_enabled": config["spatial_graph_enabled"],
                 "wave_interval": float(interval),

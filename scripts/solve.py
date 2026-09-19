@@ -19,6 +19,7 @@ from solution import (
     EDDSolver,
     FIFOSolver,
     RandomSolver,
+    RLBeamSearchSolver,
     RLSolver,
     SPTSolver,
     WaveHeuristicSolver,
@@ -32,6 +33,7 @@ SOLVERS: Dict[str, Type] = {
     "heuristic": WaveHeuristicSolver,
     "random": RandomSolver,
     "rl": RLSolver,
+    "rl_beam": RLBeamSearchSolver,
     "spt": SPTSolver,
 }
 
@@ -51,7 +53,7 @@ def run_episode(
         solver = solver_cls(env, seed=seed)
     elif solver_name == "cp_sat":
         solver = solver_cls(env, **solver_options)
-    elif solver_name == "rl":
+    elif solver_name in ("rl", "rl_beam"):
         solver = solver_cls(env, **solver_options)
     else:
         solver = solver_cls(env)
@@ -240,6 +242,12 @@ def main() -> None:
     parser.add_argument("--rl-stochastic", action="store_true")
     parser.add_argument("--rl-hidden-dim", type=int, default=128)
     parser.add_argument("--rl-aircraft-embed-dim", type=int, default=64)
+    parser.add_argument("--beam-width", type=int, default=2)
+    parser.add_argument("--beam-expansion-k", type=int, default=2)
+    parser.add_argument("--beam-depth", type=int, default=2)
+    parser.add_argument("--beam-rollout-events", type=int, default=2)
+    parser.add_argument("--beam-rollout-samples", type=int, default=1)
+    parser.add_argument("--beam-search-seed", type=int, default=17)
     args = parser.parse_args()
 
     config = build_config(args)
@@ -248,7 +256,7 @@ def main() -> None:
         solver_options = {
             "max_time_seconds": args.cp_sat_max_time,
         }
-    elif args.solver == "rl":
+    elif args.solver in ("rl", "rl_beam"):
         solver_options = {
             "checkpoint": args.checkpoint,
             "device": args.rl_device,
@@ -256,6 +264,17 @@ def main() -> None:
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
         }
+        if args.solver == "rl_beam":
+            solver_options.update(
+                {
+                    "beam_width": args.beam_width,
+                    "expansion_k": args.beam_expansion_k,
+                    "search_depth": args.beam_depth,
+                    "rollout_events": args.beam_rollout_events,
+                    "rollout_samples": args.beam_rollout_samples,
+                    "search_seed": args.beam_search_seed,
+                }
+            )
     results = [
         run_episode(
             args.solver,

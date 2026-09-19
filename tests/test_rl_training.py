@@ -309,6 +309,83 @@ class PolicyNetworkTest(unittest.TestCase):
         )
         self.assertTrue(env._is_action_valid(*env._parse_action(action)))
 
+    def test_rl_solver_ranks_only_complete_legal_actions(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+        solver = RLSolver(env)
+
+        ranked = solver.rank_actions(top_k=5)
+
+        self.assertEqual(len(ranked), 5)
+        self.assertEqual(
+            [score for _, score in ranked],
+            sorted(
+                (score for _, score in ranked),
+                reverse=True,
+            ),
+        )
+        for action, _ in ranked:
+            self.assertIn("target_slot", action)
+            self.assertTrue(
+                env._is_action_valid(*env._parse_action(action))
+            )
+
+    def test_rl_solver_top_one_matches_deterministic_policy(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+        solver = RLSolver(env)
+        encoded = encode_observation(env)
+
+        expected, _, _ = solver.trainer.select_action(
+            encoded,
+            env,
+            deterministic=True,
+        )
+        actual = solver.choose_action()
+
+        self.assertIsNotNone(actual)
+        self.assertEqual(
+            (
+                actual["high_level"],
+                actual["aircraft_id"],
+                actual["target_slot"],
+            ),
+            (
+                expected["high_level"],
+                expected["aircraft_id"],
+                expected["target_slot"],
+            ),
+        )
+
+    def test_rl_solver_preserves_stochastic_action_selection(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=7)
+        solver = RLSolver(env, deterministic=False)
+        sampled_action = dict(solver.rank_actions(top_k=1)[0][0])
+        sampled_action["_target_mask"] = [1]
+        sampled_action["_target_aux"] = [[0.0, 0.0]]
+        calls = []
+
+        def select_action(encoded, selected_env, deterministic):
+            calls.append((encoded, selected_env, deterministic))
+            return dict(sampled_action), 0.0, 0.0
+
+        solver.trainer.select_action = select_action
+
+        action = solver.choose_action()
+
+        self.assertEqual(
+            action,
+            {
+                key: value
+                for key, value in sampled_action.items()
+                if not key.startswith("_")
+            },
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0][1], env)
+        self.assertFalse(calls[0][2])
+
     def test_empty_stochastic_levels_match_deterministic_action(self) -> None:
         env = CarrierAircraftSchedulingEnv()
         env.reset(seed=7)

@@ -47,6 +47,7 @@ choose_action() -> Optional[Dict[str, int]]
 | `heuristic` | `WaveHeuristicSolver` | 规则启发式 | 否 | 当前主要非学习基线 |
 | `cp_sat` | `CPSATSolver` | 滚动整数优化 | 否 | 优化当前批次的资源分配 |
 | `rl` | `RLSolver` | 神经网络策略 | 是 | 加载 PPO checkpoint 进行推理 |
+| `rl_beam` | `RLBeamSearchSolver` | RL 引导短视域搜索 | 否 | 用真实环境 rollout 改进 checkpoint 推理 |
 
 ## RandomSolver
 
@@ -181,6 +182,31 @@ python -m scripts.solve \
 使用随机初始化网络进行推理，这不代表训练后的 RL 效果。正式评估必须
 提供有效 checkpoint，并记录训练配置和随机种子。
 
+## RLBeamSearchSolver
+
+文件：`solution/rl_beam_search_solver.py`
+
+该求解器复用 `RLSolver` 的 checkpoint 和三层合法性 mask。策略联合概率
+Top-K 负责限制分支，候选节点由环境副本的短视域真实事件模拟评价。评分
+优先级依次为完成架次、既有 readiness potential、缺额和策略概率，不使用
+checkpoint value head。
+
+搜索副本使用独立预测 RNG，不能读取真实环境 RNG 或未来扰动日程；真实
+环境只执行每轮搜索返回的第一个动作。方法依据、与原始文献的差异及完整
+命令见 `doc/rl_beam_search.md`。种子 `41001-41005` 的小预算筛选中，
+RL Beam 与 RL 均为平均 120.0 架次，但平均运行时间为 RL 的 3.90 倍；
+该结果不支持收益结论。
+
+```bash
+python -m scripts.solve \
+    --solver rl_beam \
+    --checkpoint checkpoints/rl_learned_prior_ppo.pt \
+    --beam-width 2 \
+    --beam-expansion-k 2 \
+    --beam-depth 2 \
+    --beam-rollout-events 2
+```
+
 ## 如何选择
 
 | 场景 | 推荐求解器 |
@@ -190,6 +216,7 @@ python -m scripts.solve \
 | 获得快速、较强的规则基线 | `heuristic` |
 | 测试滚动整数资源分配 | `cp_sat` |
 | 评估训练后的神经网络策略 | `rl` |
+| 用额外推理预算改进 RL | `rl_beam` |
 
 所有方法应在完全相同的环境参数和随机种子上比较，主指标统一使用
 `total_sorties_completed`。`total_missed_sorties`、运行步数和计算耗时
