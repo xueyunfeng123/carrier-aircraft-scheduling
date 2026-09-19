@@ -479,6 +479,22 @@ New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or
 a clearly documented physical assumption.
 
+## Remote execution
+
+- GPU host: `xueyf@112.125.89.153`, SSH port `6000`.
+- Connect with `ssh -p 6000 xueyf@112.125.89.153`.
+- Use SSH public-key authentication. Never store passwords, private keys, or
+  access tokens in this repository or its documentation.
+- Remote checkout: `/home/xueyf/carrier-aircraft-scheduling`.
+- RL optimization work runs from
+  `experiment/disruption-domain-randomization`.
+- The host provides eight NVIDIA RTX A6000 48 GB GPUs. Check current GPU
+  utilization before selecting a device; do not terminate or interfere with
+  other users' processes.
+- Use an isolated project environment under the remote checkout and preserve
+  generated checkpoints, logs, and benchmark outputs with their exact commit
+  and seed metadata.
+
 ## Development rules
 
 - Preserve the single business objective: maximize completed launches within
