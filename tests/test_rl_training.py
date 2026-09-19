@@ -13,13 +13,16 @@ from rl.behavior_cloning import (
 from rl.model import CarrierPolicyValueNet
 from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
+    EDGE_TYPES,
     GLOBAL_FEATURE_DIM,
+    NODE_TYPES,
     OBSERVATION_SCHEMA_VERSION,
     TARGET_AUX_FEATURE_DIM,
     TARGET_FEATURE_DIM,
     encode_observation,
     target_context_for_action,
     target_mask_for_action,
+    to_torch_batch,
 )
 from rl.ppo_trainer import PPOTrainer
 from rl.train_config import PPOConfig
@@ -235,7 +238,7 @@ class PolicyNetworkTest(unittest.TestCase):
         env.step({"high_level": 3, "aircraft_id": 0})
         moving = encode_observation(env)
 
-        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 9)
+        self.assertEqual(OBSERVATION_SCHEMA_VERSION, 10)
         self.assertEqual(
             len(initial.aircraft[0]),
             AIRCRAFT_FEATURE_DIM,
@@ -248,7 +251,11 @@ class PolicyNetworkTest(unittest.TestCase):
     def test_low_level_logits_are_conditioned_on_high_level_action(self) -> None:
         import torch
 
-        model = CarrierPolicyValueNet(AIRCRAFT_FEATURE_DIM, GLOBAL_FEATURE_DIM)
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            encoder_type="deepsets",
+        )
         high_logits, low_logits, values = model(
             torch.zeros(2, 40, AIRCRAFT_FEATURE_DIM),
             torch.zeros(2, GLOBAL_FEATURE_DIM),
@@ -267,6 +274,7 @@ class PolicyNetworkTest(unittest.TestCase):
             target_feature_dim=(
                 TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
             ),
+            encoder_type="deepsets",
         )
         _, _, target_logits, values = model.forward_with_targets(
             torch.zeros(2, 45, AIRCRAFT_FEATURE_DIM),
@@ -385,6 +393,7 @@ class PolicyNetworkTest(unittest.TestCase):
             AIRCRAFT_FEATURE_DIM,
             GLOBAL_FEATURE_DIM,
             action_conditioned_low_head=False,
+            encoder_type="deepsets",
         )
         _, low_logits, _ = model(
             torch.zeros(2, 40, AIRCRAFT_FEATURE_DIM),
@@ -392,6 +401,119 @@ class PolicyNetworkTest(unittest.TestCase):
         )
 
         self.assertEqual(tuple(low_logits.shape), (2, 40))
+
+    def test_heterogeneous_graph_shapes_match_entities(self) -> None:
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=41001)
+        encoded = encode_observation(env)
+        batch = to_torch_batch(encoded)
+
+        expected_nodes = (
+            env.num_aircraft + len(encoded.targets) + 1
+        )
+        self.assertEqual(len(encoded.node_types), expected_nodes)
+        self.assertEqual(
+            encoded.node_types.count(NODE_TYPES["aircraft"]),
+            env.num_aircraft,
+        )
+        self.assertEqual(
+            encoded.node_types.count(NODE_TYPES["vehicle"]),
+            len(env.service_vehicles),
+        )
+        self.assertEqual(
+            len(encoded.edge_sources),
+            len(encoded.edge_targets),
+        )
+        self.assertEqual(
+            len(encoded.edge_sources),
+            len(encoded.edge_types),
+        )
+        self.assertIn(
+            EDGE_TYPES["at_parking"],
+            encoded.edge_types,
+        )
+
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+        )
+        high_logits, low_logits, values = model(
+            batch["aircraft"],
+            batch["global"],
+            batch["targets"],
+            batch["low_aux"],
+            batch["node_types"],
+            batch["edge_sources"],
+            batch["edge_targets"],
+            batch["edge_types"],
+            batch["edge_mask"],
+        )
+
+        self.assertEqual(tuple(high_logits.shape), (1, 5))
+        self.assertEqual(
+            tuple(low_logits.shape),
+            (1, 5, env.num_aircraft),
+        )
+        self.assertEqual(tuple(values.shape), (1,))
+
+    def test_heterogeneous_encoder_is_aircraft_permutation_equivariant(
+        self,
+    ) -> None:
+        import torch
+
+        env = CarrierAircraftSchedulingEnv()
+        env.reset(seed=41001)
+        batch = to_torch_batch(encode_observation(env))
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+        )
+        model.eval()
+
+        with torch.no_grad():
+            original = model(
+                batch["aircraft"],
+                batch["global"],
+                batch["targets"],
+                batch["low_aux"],
+                batch["node_types"],
+                batch["edge_sources"],
+                batch["edge_targets"],
+                batch["edge_types"],
+                batch["edge_mask"],
+            )
+
+        aircraft_count = env.num_aircraft
+        permutation = torch.arange(
+            aircraft_count - 1,
+            -1,
+            -1,
+        )
+        old_to_new = torch.arange(
+            batch["node_types"].shape[1]
+        )
+        old_to_new[permutation] = torch.arange(aircraft_count)
+        permuted_sources = old_to_new[batch["edge_sources"]]
+        permuted_targets = old_to_new[batch["edge_targets"]]
+        with torch.no_grad():
+            permuted = model(
+                batch["aircraft"][:, permutation],
+                batch["global"],
+                batch["targets"],
+                batch["low_aux"][:, :, permutation],
+                batch["node_types"],
+                permuted_sources,
+                permuted_targets,
+                batch["edge_types"],
+                batch["edge_mask"],
+            )
+
+        torch.testing.assert_close(original[0], permuted[0])
+        torch.testing.assert_close(
+            original[1][:, :, permutation],
+            permuted[1],
+        )
+        torch.testing.assert_close(original[2], permuted[2])
 
     def test_rank_prior_strengths_are_checkpointed(self) -> None:
         model = CarrierPolicyValueNet(

@@ -383,6 +383,11 @@ def pretrain_behavior_cloning(
                 mb_high_actions,
                 mb_low_actions,
                 batch["low_aux"][mb],
+                batch["node_types"][mb],
+                batch["edge_sources"][mb],
+                batch["edge_targets"][mb],
+                batch["edge_types"][mb],
+                batch["edge_mask"][mb],
                 )
             )
             legal_high_logits = masked_logits(high_logits, batch["high_mask"][mb])
@@ -422,6 +427,11 @@ def pretrain_behavior_cloning(
                 high_actions,
                 low_actions,
                 batch["low_aux"],
+                batch["node_types"],
+                batch["edge_sources"],
+                batch["edge_targets"],
+                batch["edge_types"],
+                batch["edge_mask"],
             )
         )
         predicted_high = masked_logits(high_logits, batch["high_mask"]).argmax(dim=-1)

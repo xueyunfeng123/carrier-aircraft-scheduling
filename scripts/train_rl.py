@@ -28,6 +28,8 @@ from rl.model import CarrierPolicyValueNet
 from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
     GLOBAL_FEATURE_DIM,
+    NUM_EDGE_TYPES,
+    NUM_NODE_TYPES,
     OBSERVATION_SCHEMA_VERSION,
     TARGET_AUX_FEATURE_DIM,
     TARGET_FEATURE_DIM,
@@ -105,6 +107,15 @@ def main() -> None:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--aircraft-embed-dim", type=int, default=64)
     parser.add_argument("--target-embed-dim", type=int, default=64)
+    parser.add_argument(
+        "--encoder-type",
+        choices=("hetero", "deepsets"),
+        default="hetero",
+    )
+    parser.add_argument("--hetero-embed-dim", type=int, default=64)
+    parser.add_argument("--hetero-layers", type=int, default=1)
+    parser.add_argument("--hetero-heads", type=int, default=4)
+    parser.add_argument("--hetero-dropout", type=float, default=0.0)
     parser.add_argument("--low-rank-prior", type=float, default=4.0)
     parser.add_argument("--target-rank-prior", type=float, default=4.0)
     parser.add_argument(
@@ -232,6 +243,13 @@ def main() -> None:
         low_rank_prior=args.low_rank_prior,
         target_rank_prior=args.target_rank_prior,
         adaptive_low_rank_prior=args.adaptive_low_rank_prior,
+        encoder_type=args.encoder_type,
+        hetero_embed_dim=args.hetero_embed_dim,
+        hetero_layers=args.hetero_layers,
+        hetero_heads=args.hetero_heads,
+        hetero_dropout=args.hetero_dropout,
+        num_node_types=NUM_NODE_TYPES,
+        num_edge_types=NUM_EDGE_TYPES,
     ).to(args.device)
     if args.init_checkpoint:
         initial_payload = load_checkpoint(
@@ -242,9 +260,26 @@ def main() -> None:
             "observation_schema_version",
             1,
         )
-        if initial_schema != OBSERVATION_SCHEMA_VERSION:
+        legacy_deepsets = (
+            initial_schema == 9
+            and args.encoder_type == "deepsets"
+        )
+        if (
+            initial_schema != OBSERVATION_SCHEMA_VERSION
+            and not legacy_deepsets
+        ):
             raise ValueError(
-                "initial RL checkpoint observation schema is incompatible"
+                "initial RL checkpoint observation schema is incompatible; "
+                "v9 checkpoints can only initialize --encoder-type deepsets"
+            )
+        checkpoint_encoder = initial_payload.get(
+            "model_config",
+            {},
+        ).get("encoder_type", "deepsets")
+        if checkpoint_encoder != args.encoder_type:
+            raise ValueError(
+                "initial checkpoint encoder is incompatible: "
+                f"{checkpoint_encoder} != {args.encoder_type}"
             )
         incompatible = model.load_state_dict(
             initial_payload["model_state"],
@@ -956,6 +991,11 @@ def estimate_value(model, env: CarrierAircraftSchedulingEnv, device: str) -> flo
             batch["global"],
             batch["targets"],
             batch["low_aux"],
+            batch["node_types"],
+            batch["edge_sources"],
+            batch["edge_targets"],
+            batch["edge_types"],
+            batch["edge_mask"],
         )
     return float(value.item())
 

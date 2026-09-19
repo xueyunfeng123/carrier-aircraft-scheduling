@@ -9,6 +9,8 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.obs_encoder import (
     AIRCRAFT_FEATURE_DIM,
     GLOBAL_FEATURE_DIM,
+    NUM_EDGE_TYPES,
+    NUM_NODE_TYPES,
     OBSERVATION_SCHEMA_VERSION,
     TARGET_AUX_FEATURE_DIM,
     TARGET_FEATURE_DIM,
@@ -58,6 +60,9 @@ class RLSolver:
                 TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
             ),
             "target_embed_dim": target_embed_dim,
+            "encoder_type": "hetero",
+            "num_node_types": NUM_NODE_TYPES,
+            "num_edge_types": NUM_EDGE_TYPES,
         }
         checkpoint_path = Path(checkpoint) if checkpoint else None
         checkpoint_payload = None
@@ -67,13 +72,18 @@ class RLSolver:
                 "observation_schema_version",
                 1,
             )
-            if checkpoint_schema != OBSERVATION_SCHEMA_VERSION:
+            if checkpoint_schema not in (
+                9,
+                OBSERVATION_SCHEMA_VERSION,
+            ):
                 raise ValueError(
                     "RL checkpoint observation schema is incompatible with the "
                     "current environment; retrain BC+PPO"
                 )
             checkpoint_model_config = checkpoint_payload.get("model_config", {})
             model_config.update(checkpoint_model_config)
+            if "encoder_type" not in checkpoint_model_config:
+                model_config["encoder_type"] = "deepsets"
             if "action_conditioned_low_head" not in checkpoint_model_config:
                 model_config["action_conditioned_low_head"] = False
         if low_rank_prior is not None:

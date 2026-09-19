@@ -302,6 +302,16 @@ RL 策略采用“作业类型→飞机→目标停机位/跑道/车辆”的三
 显式隔离训练与验证场景；训练器按验证集平均值和最差值保存最佳
 checkpoint。纯 PPO 对照可通过 `--bc-episodes 0` 运行。
 
+新训练默认使用纯 PyTorch 稀疏异构关系编码器，节点包括飞机、服务车辆、
+停机位、跑道和波次/全局节点；三层 mask 与目标 pointer 保持不变。
+`--encoder-type deepsets` 可运行旧编码器，schema-9 checkpoint 也仅通过
+该路径迁移。设计、关系表、实测开销和 smoke 结果见
+`doc/heterogeneous_gnn_design.md`。编码器基准可运行：
+
+```bash
+python -m scripts.benchmark_hetero_encoder --device cpu
+```
+
 飞机 SPT 排序和目标最早可达排序的强度可通过 `--low-rank-prior` 与
 `--target-rank-prior` 消融。`--adaptive-low-rank-prior` 将固定飞机排序
 权重替换为按状态和作业类型学习的门控，详细结果见

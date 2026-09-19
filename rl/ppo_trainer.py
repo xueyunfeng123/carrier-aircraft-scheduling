@@ -52,6 +52,11 @@ class PPOTrainer:
                 batch["global"],
                 batch["targets"],
                 batch["low_aux"],
+                batch["node_types"],
+                batch["edge_sources"],
+                batch["edge_targets"],
+                batch["edge_types"],
+                batch["edge_mask"],
             )
             high_dist = masked_categorical(
                 high_logits / temperature,
@@ -99,6 +104,11 @@ class PPOTrainer:
                 high_action,
                 low_action,
                 batch["low_aux"],
+                batch["node_types"],
+                batch["edge_sources"],
+                batch["edge_targets"],
+                batch["edge_types"],
+                batch["edge_mask"],
             )
             target_dist = masked_categorical(
                 target_logits / temperature,
@@ -178,6 +188,11 @@ class PPOTrainer:
                     mb_high_actions,
                     mb_low_actions,
                     batch["low_aux"][mb_tensor],
+                    batch["node_types"][mb_tensor],
+                    batch["edge_sources"][mb_tensor],
+                    batch["edge_targets"][mb_tensor],
+                    batch["edge_types"][mb_tensor],
+                    batch["edge_mask"][mb_tensor],
                     )
                 )
                 high_mask = batch["high_mask"][mb_tensor]

@@ -13,7 +13,37 @@ AIRCRAFT_FEATURE_DIM = 23
 GLOBAL_FEATURE_DIM = 20
 TARGET_FEATURE_DIM = 15
 TARGET_AUX_FEATURE_DIM = 2
-OBSERVATION_SCHEMA_VERSION = 9
+OBSERVATION_SCHEMA_VERSION = 10
+
+NODE_TYPES = {
+    "aircraft": 0,
+    "vehicle": 1,
+    "parking": 2,
+    "runway": 3,
+    "global": 4,
+    "null": 5,
+}
+EDGE_TYPES = {
+    "self": 1,
+    "to_global": 2,
+    "from_global": 3,
+    "at_parking": 4,
+    "hosts_aircraft": 5,
+    "vehicle_at_parking": 6,
+    "parking_has_vehicle": 7,
+    "assigned_to_aircraft": 8,
+    "uses_vehicle": 9,
+    "service_candidate": 10,
+    "eligible_vehicle": 11,
+    "recovery_candidate": 12,
+    "eligible_parking": 13,
+    "launch_candidate": 14,
+    "eligible_runway": 15,
+    "deck_neighbor": 16,
+    "runway_conflict": 17,
+}
+NUM_NODE_TYPES = len(NODE_TYPES)
+NUM_EDGE_TYPES = max(EDGE_TYPES.values()) + 1
 
 
 @dataclass
@@ -25,6 +55,10 @@ class EncodedObservation:
     global_features: List[float]
     high_mask: List[int]
     low_masks: List[List[int]]
+    node_types: List[int]
+    edge_sources: List[int]
+    edge_targets: List[int]
+    edge_types: List[int]
 
 
 def encode_observation(env: CarrierAircraftSchedulingEnv) -> EncodedObservation:
@@ -58,6 +92,13 @@ def encode_observation(env: CarrierAircraftSchedulingEnv) -> EncodedObservation:
         for action_id in HIGH_LEVEL_ACTIONS
     ]
     low_aux = _encode_low_aux(env, low_masks)
+    node_types, edge_sources, edge_targets, edge_types = (
+        _encode_heterogeneous_graph(
+            env,
+            target_keys,
+            low_masks,
+        )
+    )
     return EncodedObservation(
         aircraft=aircraft_features,
         low_aux=low_aux,
@@ -66,6 +107,10 @@ def encode_observation(env: CarrierAircraftSchedulingEnv) -> EncodedObservation:
         global_features=global_features,
         high_mask=[int(value) for value in mask["high_level"]],
         low_masks=low_masks,
+        node_types=node_types,
+        edge_sources=edge_sources,
+        edge_targets=edge_targets,
+        edge_types=edge_types,
     )
 
 
@@ -79,6 +124,7 @@ def to_torch_batch(encoded: EncodedObservation, device: str = "cpu") -> Dict[str
             "PyTorch is required for RL solver/training. Install it with `pip install torch`."
         ) from exc
 
+    graph = _graph_batch_to_torch([encoded], device)
     return {
         "aircraft": torch.tensor([encoded.aircraft], dtype=torch.float32, device=device),
         "low_aux": torch.tensor([encoded.low_aux], dtype=torch.float32, device=device),
@@ -86,6 +132,7 @@ def to_torch_batch(encoded: EncodedObservation, device: str = "cpu") -> Dict[str
         "global": torch.tensor([encoded.global_features], dtype=torch.float32, device=device),
         "high_mask": torch.tensor([encoded.high_mask], dtype=torch.bool, device=device),
         "low_masks": torch.tensor([encoded.low_masks], dtype=torch.bool, device=device),
+        **graph,
     }
 
 
@@ -99,6 +146,7 @@ def batch_to_torch(encoded_items: List[EncodedObservation], device: str = "cpu")
             "PyTorch is required for RL solver/training. Install it with `pip install torch`."
         ) from exc
 
+    graph = _graph_batch_to_torch(encoded_items, device)
     return {
         "aircraft": torch.tensor(
             [item.aircraft for item in encoded_items],
@@ -130,7 +178,246 @@ def batch_to_torch(encoded_items: List[EncodedObservation], device: str = "cpu")
             dtype=torch.bool,
             device=device,
         ),
+        **graph,
     }
+
+
+def _graph_batch_to_torch(
+    encoded_items: List[EncodedObservation],
+    device: str,
+) -> Dict[str, Any]:
+    import torch
+
+    node_counts = {len(item.node_types) for item in encoded_items}
+    if len(node_counts) != 1:
+        raise ValueError(
+            "heterogeneous graph batches require equal node counts"
+        )
+    max_edges = max(len(item.edge_types) for item in encoded_items)
+    edge_sources = []
+    edge_targets = []
+    edge_types = []
+    edge_masks = []
+    for item in encoded_items:
+        padding = max_edges - len(item.edge_types)
+        edge_sources.append(item.edge_sources + [0] * padding)
+        edge_targets.append(item.edge_targets + [0] * padding)
+        edge_types.append(item.edge_types + [0] * padding)
+        edge_masks.append(
+            [True] * len(item.edge_types) + [False] * padding
+        )
+    return {
+        "node_types": torch.tensor(
+            [item.node_types for item in encoded_items],
+            dtype=torch.long,
+            device=device,
+        ),
+        "edge_sources": torch.tensor(
+            edge_sources,
+            dtype=torch.long,
+            device=device,
+        ),
+        "edge_targets": torch.tensor(
+            edge_targets,
+            dtype=torch.long,
+            device=device,
+        ),
+        "edge_types": torch.tensor(
+            edge_types,
+            dtype=torch.long,
+            device=device,
+        ),
+        "edge_mask": torch.tensor(
+            edge_masks,
+            dtype=torch.bool,
+            device=device,
+        ),
+    }
+
+
+def _encode_heterogeneous_graph(
+    env: CarrierAircraftSchedulingEnv,
+    target_keys: List[Tuple[str, Any]],
+    low_masks: List[List[int]],
+) -> Tuple[List[int], List[int], List[int], List[int]]:
+    """Build a sparse typed graph without performing extra route searches."""
+
+    aircraft_count = env.num_aircraft
+    target_offset = aircraft_count
+    global_node = target_offset + len(target_keys)
+    target_nodes = {
+        key: target_offset + index
+        for index, key in enumerate(target_keys)
+    }
+    node_types = [NODE_TYPES["aircraft"]] * aircraft_count
+    node_types.extend(
+        NODE_TYPES.get(target_type, NODE_TYPES["null"])
+        for target_type, _ in target_keys
+    )
+    node_types.append(NODE_TYPES["global"])
+
+    edges = set()
+
+    def add(source: int, target: int, relation: str) -> None:
+        edges.add((source, target, EDGE_TYPES[relation]))
+
+    for node in range(global_node + 1):
+        add(node, node, "self")
+        if node != global_node:
+            add(node, global_node, "to_global")
+            add(global_node, node, "from_global")
+
+    for aircraft_id, aircraft in enumerate(env.aircraft):
+        if aircraft.spot_id >= 0:
+            parking_node = target_nodes.get(
+                ("parking", aircraft.spot_id)
+            )
+            if parking_node is not None:
+                add(aircraft_id, parking_node, "at_parking")
+                add(
+                    parking_node,
+                    aircraft_id,
+                    "hosts_aircraft",
+                )
+
+    vehicle_by_id = {
+        vehicle.vehicle_id: vehicle
+        for vehicle in env.service_vehicles
+    }
+    for target_key, vehicle_node in target_nodes.items():
+        if target_key[0] != "vehicle":
+            continue
+        vehicle = vehicle_by_id[str(target_key[1])]
+        if vehicle.busy_aircraft_id is not None:
+            add(
+                vehicle_node,
+                vehicle.busy_aircraft_id,
+                "assigned_to_aircraft",
+            )
+            add(
+                vehicle.busy_aircraft_id,
+                vehicle_node,
+                "uses_vehicle",
+            )
+        if env.deck_layout is not None:
+            try:
+                spot_id = env.deck_layout.parking_spot(
+                    vehicle.node_id
+                )
+            except ValueError:
+                spot_id = None
+            if spot_id is not None:
+                parking_node = target_nodes[("parking", spot_id)]
+                add(
+                    vehicle_node,
+                    parking_node,
+                    "vehicle_at_parking",
+                )
+                add(
+                    parking_node,
+                    vehicle_node,
+                    "parking_has_vehicle",
+                )
+
+    service_actions = {
+        1: "fuel",
+        2: "arm",
+        4: "inspection",
+    }
+    for high_level, service_type in service_actions.items():
+        available_vehicle_nodes = [
+            target_nodes[("vehicle", vehicle.vehicle_id)]
+            for vehicle in env.service_vehicles
+            if vehicle.service_type == service_type
+            and vehicle.busy_aircraft_id is None
+        ]
+        for aircraft_id, eligible in enumerate(
+            low_masks[high_level]
+        ):
+            if not eligible:
+                continue
+            for vehicle_node in available_vehicle_nodes:
+                add(
+                    aircraft_id,
+                    vehicle_node,
+                    "service_candidate",
+                )
+                add(
+                    vehicle_node,
+                    aircraft_id,
+                    "eligible_vehicle",
+                )
+
+    free_parking_nodes = [
+        target_nodes[("parking", spot_id)]
+        for spot_id, occupant in enumerate(env.parking_occupancy)
+        if occupant is None
+    ]
+    for aircraft_id, eligible in enumerate(low_masks[0]):
+        if not eligible:
+            continue
+        for parking_node in free_parking_nodes:
+            add(
+                aircraft_id,
+                parking_node,
+                "recovery_candidate",
+            )
+            add(
+                parking_node,
+                aircraft_id,
+                "eligible_parking",
+            )
+
+    runway_nodes = [
+        target_nodes[key]
+        for key in target_keys
+        if key[0] == "runway"
+    ]
+    for aircraft_id, eligible in enumerate(low_masks[3]):
+        if not eligible:
+            continue
+        for runway_node in runway_nodes:
+            add(
+                aircraft_id,
+                runway_node,
+                "launch_candidate",
+            )
+            add(
+                runway_node,
+                aircraft_id,
+                "eligible_runway",
+            )
+
+    if env.deck_layout is not None:
+        section_spots: Dict[str, List[int]] = {}
+        for spot_id, section in enumerate(
+            env.deck_layout.parking_sections
+        ):
+            section_spots.setdefault(section, []).append(spot_id)
+        for spots in section_spots.values():
+            for first, second in zip(spots, spots[1:]):
+                first_node = target_nodes[("parking", first)]
+                second_node = target_nodes[("parking", second)]
+                add(first_node, second_node, "deck_neighbor")
+                add(second_node, first_node, "deck_neighbor")
+        for runway_id, conflicts in enumerate(
+            env.deck_layout.runway_conflicts
+        ):
+            runway_node = target_nodes[("runway", runway_id)]
+            for conflict_id in conflicts:
+                add(
+                    runway_node,
+                    target_nodes[("runway", conflict_id)],
+                    "runway_conflict",
+                )
+
+    ordered_edges = sorted(edges)
+    return (
+        node_types,
+        [edge[0] for edge in ordered_edges],
+        [edge[1] for edge in ordered_edges],
+        [edge[2] for edge in ordered_edges],
+    )
 
 
 def _normalize_aircraft(

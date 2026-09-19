@@ -402,9 +402,13 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   relationships without copying incompatible 28-position indices.
 - Inspection is a fifth high-level action. RL uses 23 aircraft features,
   target/vehicle candidate features, 20 global features, and observation
-  schema version 9.
+  schema version 10.
+- New RL training defaults to the pure-PyTorch sparse heterogeneous relation
+  encoder documented in `doc/heterogeneous_gnn_design.md`. Schema-9
+  checkpoints remain inference-compatible through the legacy `deepsets`
+  encoder; do not partially load them into the heterogeneous encoder.
 - Heuristic, priority-rule, CP-SAT, and RL interfaces have been adapted.
-- All 69 unit tests pass. In the corrected fixed seed-10007, 60-minute,
+- All 71 unit tests pass. In the corrected fixed seed-10007, 60-minute,
   12-wave run,
   Random/FIFO/SPT/EDD/Heuristic/CP-SAT complete
   99/113/118/106/118/119 launches.
