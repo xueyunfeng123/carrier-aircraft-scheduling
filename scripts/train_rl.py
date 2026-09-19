@@ -15,6 +15,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on local enviro
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG
+from env.disruptions import PROFILE_SETTINGS
 from rl.behavior_cloning import (
     Demonstrations,
     append_demonstration,
@@ -82,8 +83,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--disruption-profile",
-        choices=("none", "light", "medium", "heavy"),
+        choices=tuple(PROFILE_SETTINGS),
         default=DEFAULT_CONFIG["disruption_profile"],
+    )
+    parser.add_argument(
+        "--train-disruption-profiles",
+        nargs="+",
+        choices=tuple(PROFILE_SETTINGS),
+        help="training profiles; defaults to --disruption-profile",
+    )
+    parser.add_argument(
+        "--validation-disruption-profiles",
+        nargs="+",
+        choices=tuple(PROFILE_SETTINGS),
+        help="validation profiles; defaults to --disruption-profile",
     )
     parser.add_argument("--num-ammo-transport-vehicles", type=int, default=DEFAULT_CONFIG["num_ammo_transport_vehicles"])
     parser.add_argument("--num-lower-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_lower_weapon_lifts"])
@@ -190,14 +203,16 @@ def main() -> None:
         allow_overlap=args.allow_seed_overlap,
     )
     config = build_config(args)
-    training_configs = build_interval_configs(
+    training_configs = build_scenario_configs(
         config,
         args.train_wave_intervals,
+        args.train_disruption_profiles,
         args.waves_per_scenario,
     )
-    validation_configs = build_interval_configs(
+    validation_configs = build_scenario_configs(
         config,
         args.validation_wave_intervals,
+        args.validation_disruption_profiles,
         args.waves_per_scenario,
     )
     ppo_config = PPOConfig(
@@ -224,7 +239,8 @@ def main() -> None:
         EpisodeSeedScheduler(training_seeds)
         for _ in training_configs
     ]
-    env.reset(seed=rollout_seed_schedulers[0].next_seed())
+    if len(training_configs) == 1:
+        env.reset(seed=rollout_seed_schedulers[0].next_seed())
     model = CarrierPolicyValueNet(
         AIRCRAFT_FEATURE_DIM,
         GLOBAL_FEATURE_DIM,
@@ -441,6 +457,7 @@ def main() -> None:
         float("-inf"),
         float("-inf"),
         float("-inf"),
+        float("-inf"),
     )
     best_model_state = None
     best_optimizer_state = None
@@ -456,13 +473,42 @@ def main() -> None:
             "training_seeds": training_seeds,
             "validation_seeds": validation_seeds,
             "training_wave_intervals": [
-                item["wave_interval"]
-                for item in training_configs
+                interval
+                for interval in unique_config_values(
+                    training_configs,
+                    "wave_interval",
+                )
             ],
             "validation_wave_intervals": [
-                item["wave_interval"]
-                for item in validation_configs
+                interval
+                for interval in unique_config_values(
+                    validation_configs,
+                    "wave_interval",
+                )
             ],
+            "training_disruption_profiles": [
+                str(profile)
+                for profile in unique_config_values(
+                    training_configs,
+                    "disruption_profile",
+                )
+            ],
+            "validation_disruption_profiles": [
+                str(profile)
+                for profile in unique_config_values(
+                    validation_configs,
+                    "disruption_profile",
+                )
+            ],
+            "checkpoint_selection_objective": (
+                "maximin scenario-cell mean completed sorties, then "
+                "overall mean, then worst episode, then mean missed sorties"
+            ),
+            "best_validation_score": (
+                list(best_score)
+                if best_score[0] != float("-inf")
+                else None
+            ),
             "init_checkpoint": args.init_checkpoint,
             "observation_schema_version": OBSERVATION_SCHEMA_VERSION,
             "env_config": config,
@@ -515,11 +561,7 @@ def main() -> None:
             validation_seeds,
             args.device,
         )
-        score = (
-            eval_stats["completed"],
-            eval_stats["worst_completed"],
-            -eval_stats["missed"],
-        )
+        score = robust_checkpoint_score(eval_stats)
         if score > best_score:
             best_score = score
             best_update = update
@@ -533,8 +575,12 @@ def main() -> None:
             "initial_eval,"
             f"completed,{eval_stats['completed']:.2f},"
             f"std,{eval_stats['completed_std']:.2f},"
+            f"worst_scenario_completed,"
+            f"{eval_stats['worst_scenario_completed']:.2f},"
             f"worst_completed,{eval_stats['worst_completed']:.2f},"
+            f"by_profile,{format_profile_scores(eval_stats)},"
             f"by_interval,{format_interval_scores(eval_stats)},"
+            f"by_scenario,{format_scenario_scores(eval_stats)},"
             f"missed,{eval_stats['missed']:.2f}"
         )
 
@@ -576,8 +622,12 @@ def main() -> None:
                 f"value_loss,{stats['value_loss']:.6f},"
                 f"entropy,{stats['entropy']:.6f},"
                 f"eval_completed,{eval_stats['completed']:.2f},"
+                f"eval_worst_scenario_completed,"
+                f"{eval_stats['worst_scenario_completed']:.2f},"
                 f"eval_worst_completed,{eval_stats['worst_completed']:.2f},"
+                f"eval_by_profile,{format_profile_scores(eval_stats)},"
                 f"eval_by_interval,{format_interval_scores(eval_stats)},"
+                f"eval_by_scenario,{format_scenario_scores(eval_stats)},"
                 f"eval_missed,{eval_stats['missed']:.2f}"
             )
 
@@ -593,9 +643,10 @@ def main() -> None:
         print(
             "best,"
             f"update,{best_update},"
-            f"eval_completed,{best_score[0]:.2f},"
-            f"eval_worst_completed,{best_score[1]:.2f},"
-            f"eval_missed,{-best_score[2]:.2f}"
+            f"eval_worst_scenario_completed,{best_score[0]:.2f},"
+            f"eval_completed,{best_score[1]:.2f},"
+            f"eval_worst_completed,{best_score[2]:.2f},"
+            f"eval_missed,{-best_score[3]:.2f}"
         )
 
 
@@ -617,22 +668,71 @@ def build_interval_configs(
     intervals: Optional[Sequence[float]],
     waves_per_scenario: int,
 ) -> List[Dict[str, Any]]:
+    return build_scenario_configs(
+        base_config,
+        intervals,
+        None,
+        waves_per_scenario,
+    )
+
+
+def build_scenario_configs(
+    base_config: Dict[str, Any],
+    intervals: Optional[Sequence[float]],
+    disruption_profiles: Optional[Sequence[str]],
+    waves_per_scenario: int,
+) -> List[Dict[str, Any]]:
     if not intervals:
-        return [dict(base_config)]
+        selected_intervals = [float(base_config["wave_interval"])]
+        preserve_duration = True
+    else:
+        selected_intervals = list(
+            dict.fromkeys(float(value) for value in intervals)
+        )
+        preserve_duration = False
     if waves_per_scenario < 1:
         raise ValueError("waves_per_scenario must be positive")
 
+    selected_profiles = list(
+        dict.fromkeys(
+            str(value)
+            for value in (
+                disruption_profiles
+                or [base_config.get("disruption_profile", "none")]
+            )
+        )
+    )
+    unknown_profiles = [
+        profile
+        for profile in selected_profiles
+        if profile not in PROFILE_SETTINGS
+    ]
+    if unknown_profiles:
+        raise ValueError(
+            f"unknown disruption profiles: {unknown_profiles}"
+        )
+
     configs = []
-    for interval in dict.fromkeys(float(value) for value in intervals):
+    for interval in selected_intervals:
         if interval <= 0.0:
             raise ValueError("wave intervals must be positive")
-        scenario_config = dict(base_config)
-        scenario_config["wave_interval"] = interval
-        scenario_config["simulation_duration"] = (
-            interval * waves_per_scenario
-        )
-        configs.append(scenario_config)
+        for profile in selected_profiles:
+            scenario_config = dict(base_config)
+            scenario_config["wave_interval"] = interval
+            if not preserve_duration:
+                scenario_config["simulation_duration"] = (
+                    interval * waves_per_scenario
+                )
+            scenario_config["disruption_profile"] = profile
+            configs.append(scenario_config)
     return configs
+
+
+def unique_config_values(
+    configs: Sequence[Dict[str, Any]],
+    key: str,
+) -> List[Any]:
+    return list(dict.fromkeys(config[key] for config in configs))
 
 
 def collect_demonstrations_across_configs(
@@ -673,6 +773,34 @@ def format_interval_scores(stats: Dict[str, Any]) -> str:
         for interval, score in sorted(
             stats["completed_by_interval"].items()
         )
+    )
+
+
+def format_profile_scores(stats: Dict[str, Any]) -> str:
+    return ";".join(
+        f"{profile}:{score:.2f}"
+        for profile, score in stats["completed_by_profile"].items()
+    )
+
+
+def format_scenario_scores(stats: Dict[str, Any]) -> str:
+    return ";".join(
+        f"{profile}@{interval:g}:{score:.2f}"
+        for (profile, interval), score in sorted(
+            stats["completed_by_scenario"].items(),
+            key=lambda item: (item[0][0], item[0][1]),
+        )
+    )
+
+
+def robust_checkpoint_score(
+    stats: Dict[str, Any],
+) -> tuple[float, float, float, float]:
+    return (
+        float(stats["worst_scenario_completed"]),
+        float(stats["completed"]),
+        float(stats["worst_completed"]),
+        -float(stats["missed"]),
     )
 
 
@@ -994,6 +1122,14 @@ def evaluate_policy(
         item["total_sorties_completed"]
         for item in results
     ]
+    completed_by_scenario = {
+        scenario_key(config): statistics.mean(
+            result["total_sorties_completed"]
+            for result_config, result in scenario_results
+            if scenario_key(result_config) == scenario_key(config)
+        )
+        for config in configs
+    }
     return {
         "completed": statistics.mean(completed),
         "completed_std": (
@@ -1002,17 +1138,45 @@ def evaluate_policy(
             else 0.0
         ),
         "worst_completed": min(completed),
+        "worst_scenario_completed": min(
+            completed_by_scenario.values()
+        ),
         "missed": statistics.mean(item["total_missed_sorties"] for item in results),
-        "completed_by_interval": {
-            float(config["wave_interval"]): statistics.mean(
+        "completed_by_profile": {
+            str(profile): statistics.mean(
                 result["total_sorties_completed"]
                 for result_config, result in scenario_results
-                if result_config["wave_interval"]
-                == config["wave_interval"]
+                if str(result_config["disruption_profile"])
+                == str(profile)
             )
-            for config in configs
+            for profile in unique_config_values(
+                configs,
+                "disruption_profile",
+            )
         },
+        "completed_by_interval": {
+            float(interval): statistics.mean(
+                result["total_sorties_completed"]
+                for result_config, result in scenario_results
+                if float(result_config["wave_interval"])
+                == float(interval)
+            )
+            for interval in unique_config_values(
+                configs,
+                "wave_interval",
+            )
+        },
+        "completed_by_scenario": completed_by_scenario,
     }
+
+
+def scenario_key(
+    config: Dict[str, Any],
+) -> tuple[str, float]:
+    return (
+        str(config.get("disruption_profile", "none")),
+        float(config["wave_interval"]),
+    )
 
 
 if __name__ == "__main__":

@@ -485,9 +485,11 @@ a clearly documented physical assumption.
 - Connect with `ssh -p 6000 xueyf@112.125.89.153`.
 - Use SSH public-key authentication. Never store passwords, private keys, or
   access tokens in this repository or its documentation.
-- Remote checkout: `/home/xueyf/carrier-aircraft-scheduling`.
-- Dynamic-disruption work runs from
-  `experiment/dynamic-disruption-rl`.
+- Shared Python environment:
+  `/home/xueyf/carrier-aircraft-scheduling/.venv`.
+- Disruption-randomization worktree:
+  `/home/xueyf/worktrees/rl-disruption-randomization`.
+- Disruption-randomization branch: `rl/disruption-randomization`.
 - The host provides eight NVIDIA RTX A6000 48 GB GPUs. Check current GPU
   utilization before selecting a device; do not terminate or interfere with
   other users' processes.

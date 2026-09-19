@@ -47,6 +47,25 @@ heavy 相对各自无扰动均值的下降量：
 
 下一步应在不改网络结构的前提下进行 disruption-domain randomization：训练时混合 none/light/medium/heavy，并按扰动后恢复速度、窗口缺额和尾部风险选择 checkpoint。若扩展测试后仍不能稳定超过 CP-SAT，再考虑加入事件历史编码或时序图网络。
 
+## 扰动域随机化筛选设计
+
+`train_rl` 支持训练与验证各自配置多个扰动档位和多个波次间隔，并对两者取笛卡尔积。PPO rollout 以固定顺序均衡轮转每个场景单元。checkpoint 使用以下字典序目标，避免高负载场景的高均值掩盖困难场景退化：
+
+1. 最大化最差 `profile × wave_interval` 单元在验证 seed 上的平均完成架次。
+2. 最大化全部验证场景的平均完成架次。
+3. 最大化最差单局完成架次。
+4. 最小化全部验证场景的平均缺额。
+
+筛选实验从 `checkpoints/rl_multiload_bc.pt` 初始化，训练 seed 为 `30001-30005`，筛选 seed 固定为 `41001-41005`，负载为 50/70 分钟，扰动为 none/light/medium/heavy。8 次 PPO 更新恰好覆盖一轮 8 个场景单元。禁止将 `70001-70050` 用于本实验的训练、筛选或报告。
+
+预注册的工程筛选门槛如下：
+
+- randomized RL 的 heavy 汇总均值严格高于 Heuristic、滚动 CP-SAT、固定负载 RL 和跨负载 RL。
+- randomized RL 的综合均值不低于上述四种对照中的最佳值。
+- randomized RL 的最差场景单元均值不低于初始化 checkpoint。
+
+五个筛选 seed 只用于选择是否进入扩大实验，不能满足项目正式准入条件。正式结论仍要求至少 30 个全新冻结 seed，并对主要对照达到配对显著性 `p < 0.05`。
+
 ## 复现
 
 ```bash
@@ -54,6 +73,9 @@ python -m scripts.benchmark_dynamic_disruptions \
   --runs 3 \
   --seed 65001 \
   --waves 12
+
+# 均衡扰动域随机化 PPO 与 4 类对照的多负载筛选
+./scripts/run_rl_disruption_randomization_experiment.sh
 ```
 
 明细与汇总：

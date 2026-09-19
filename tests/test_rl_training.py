@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.behavior_cloning import (
@@ -27,11 +28,16 @@ from scripts.train_rl import (
     EpisodeSeedScheduler,
     average_rollout_stats,
     build_interval_configs,
+    build_scenario_configs,
     build_ppo_optimizer,
     collect_rollout,
     format_interval_scores,
+    format_profile_scores,
+    format_scenario_scores,
+    evaluate_policy,
     resolve_training_seeds,
     resolve_validation_seeds,
+    robust_checkpoint_score,
     self_imitation_parameters,
     select_dagger_seeds,
     validate_seed_partition,
@@ -134,6 +140,47 @@ class TrainingSeedProtocolTest(unittest.TestCase):
             [(45.0, 540.0), (55.0, 660.0)],
         )
 
+    def test_scenario_configs_are_profile_load_cartesian_product(self) -> None:
+        configs = build_scenario_configs(
+            {
+                "wave_interval": 60.0,
+                "simulation_duration": 720.0,
+                "disruption_profile": "none",
+            },
+            [50.0, 70.0],
+            ["light", "heavy"],
+            waves_per_scenario=12,
+        )
+
+        self.assertEqual(
+            [
+                (
+                    config["disruption_profile"],
+                    config["wave_interval"],
+                    config["simulation_duration"],
+                )
+                for config in configs
+            ],
+            [
+                ("light", 50.0, 600.0),
+                ("heavy", 50.0, 600.0),
+                ("light", 70.0, 840.0),
+                ("heavy", 70.0, 840.0),
+            ],
+        )
+
+    def test_scenario_configs_default_to_base_profile_and_duration(self) -> None:
+        base = {
+            "wave_interval": 60.0,
+            "simulation_duration": 725.0,
+            "disruption_profile": "medium",
+        }
+
+        self.assertEqual(
+            build_scenario_configs(base, None, None, 12),
+            [base],
+        )
+
     def test_rollout_statistics_are_averaged_across_loads(self) -> None:
         stats = average_rollout_stats(
             [
@@ -160,6 +207,100 @@ class TrainingSeedProtocolTest(unittest.TestCase):
             formatted,
             "50:106.00;60:120.00;70:133.50",
         )
+
+    def test_profile_and_scenario_scores_are_formatted(self) -> None:
+        stats = {
+            "completed_by_profile": {
+                "none": 120.0,
+                "heavy": 112.5,
+            },
+            "completed_by_scenario": {
+                ("none", 60.0): 120.0,
+                ("heavy", 70.0): 118.0,
+                ("heavy", 50.0): 107.0,
+            },
+        }
+
+        self.assertEqual(
+            format_profile_scores(stats),
+            "none:120.00;heavy:112.50",
+        )
+        self.assertEqual(
+            format_scenario_scores(stats),
+            "heavy@50:107.00;heavy@70:118.00;none@60:120.00",
+        )
+
+    def test_robust_checkpoint_score_prioritizes_worst_scenario(self) -> None:
+        robust = {
+            "worst_scenario_completed": 110.0,
+            "completed": 118.0,
+            "worst_completed": 108.0,
+            "missed": 122.0,
+        }
+        fragile = {
+            "worst_scenario_completed": 109.0,
+            "completed": 125.0,
+            "worst_completed": 109.0,
+            "missed": 115.0,
+        }
+
+        self.assertGreater(
+            robust_checkpoint_score(robust),
+            robust_checkpoint_score(fragile),
+        )
+
+    @patch("scripts.train_rl.run_episode")
+    def test_policy_evaluation_aggregates_profiles_and_loads(
+        self,
+        run_episode,
+    ) -> None:
+        totals = iter([100, 102, 90, 94, 120, 124, 110, 112])
+
+        def fake_episode(*args, **kwargs):
+            del args, kwargs
+            completed = next(totals)
+            return {
+                "total_sorties_completed": completed,
+                "total_missed_sorties": 240 - completed,
+            }
+
+        run_episode.side_effect = fake_episode
+        configs = build_scenario_configs(
+            {
+                "wave_interval": 60.0,
+                "simulation_duration": 720.0,
+                "disruption_profile": "none",
+            },
+            [50.0, 70.0],
+            ["none", "heavy"],
+            waves_per_scenario=12,
+        )
+
+        stats = evaluate_policy(
+            configs,
+            checkpoint="unused.pt",
+            seeds=[1, 2],
+            device="cpu",
+        )
+
+        self.assertEqual(
+            stats["completed_by_scenario"],
+            {
+                ("none", 50.0): 101,
+                ("heavy", 50.0): 92,
+                ("none", 70.0): 122,
+                ("heavy", 70.0): 111,
+            },
+        )
+        self.assertEqual(
+            stats["completed_by_profile"],
+            {"none": 111.5, "heavy": 101.5},
+        )
+        self.assertEqual(
+            stats["completed_by_interval"],
+            {50.0: 96.5, 70.0: 116.5},
+        )
+        self.assertEqual(stats["worst_scenario_completed"], 92)
 
     def test_explicit_seed_sets_are_deduplicated_in_order(self) -> None:
         self.assertEqual(

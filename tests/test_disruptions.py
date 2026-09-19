@@ -6,9 +6,57 @@ import unittest
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.obs_encoder import encode_observation
+from scripts.benchmark_dynamic_disruptions import build_summary
 
 
 class DynamicDisruptionTest(unittest.TestCase):
+    def test_benchmark_summary_groups_scenarios_profiles_and_loads(
+        self,
+    ) -> None:
+        rows = []
+        for profile, interval, heuristic, cp_sat, candidate in (
+            ("none", 50.0, 100, 101, 102),
+            ("none", 70.0, 120, 121, 122),
+            ("heavy", 50.0, 90, 94, 96),
+            ("heavy", 70.0, 110, 112, 113),
+        ):
+            for solver, completed in (
+                ("heuristic", heuristic),
+                ("cp_sat", cp_sat),
+                ("rl_randomized", candidate),
+            ):
+                rows.append(
+                    {
+                        "profile": profile,
+                        "wave_interval": interval,
+                        "solver": solver,
+                        "total_sorties_completed": completed,
+                        "total_missed_sorties": 240 - completed,
+                        "worst_wave": 5,
+                        "runtime_seconds": 1.0,
+                    }
+                )
+
+        summary = build_summary(rows)
+        candidate_overall = next(
+            row
+            for row in summary
+            if row["scope"] == "overall"
+            and row["solver"] == "rl_randomized"
+        )
+        heavy_candidate = next(
+            row
+            for row in summary
+            if row["scope"] == "profile"
+            and row["profile"] == "heavy"
+            and row["solver"] == "rl_randomized"
+        )
+
+        self.assertEqual(candidate_overall["mean_total_sorties"], 108.25)
+        self.assertEqual(candidate_overall["worst_scenario_mean"], 96)
+        self.assertEqual(candidate_overall["delta_vs_cp_sat"], 1.25)
+        self.assertEqual(heavy_candidate["mean_total_sorties"], 104.5)
+
     def test_profile_rng_is_reproducible_and_independent(self) -> None:
         base = self._config(disruption_profile="none")
         heavy = self._config(disruption_profile="heavy")
@@ -45,9 +93,16 @@ class DynamicDisruptionTest(unittest.TestCase):
         baseline.reset(seed=19)
         disrupted.reset(seed=19)
 
+        baseline_observation = encode_observation(baseline)
+        disrupted_observation = encode_observation(disrupted)
+
         self.assertEqual(
-            encode_observation(baseline).global_features,
-            encode_observation(disrupted).global_features,
+            baseline_observation,
+            disrupted_observation,
+        )
+        self.assertNotEqual(
+            baseline.disruption_schedule,
+            disrupted.disruption_schedule,
         )
 
     def test_profiles_are_nested_for_a_paired_seed(self) -> None:
