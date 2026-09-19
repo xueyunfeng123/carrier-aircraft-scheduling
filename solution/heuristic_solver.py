@@ -281,14 +281,7 @@ class WaveHeuristicSolver:
         return active_fuel < min(fuel_waiting, target_fuel_for_arm_load)
 
     def _arm_to_fuel_concurrency_ratio(self) -> float:
-        fuel_work = (
-            self._fuel_mean
-            * self.env.service_time_multipliers["fuel"]
-        )
-        return max(
-            1.0,
-            self._expected_arm_work() / max(0.1, fuel_work),
-        )
+        return max(1.0, self._expected_arm_work() / max(0.1, self._fuel_mean))
 
     def _expected_arm_work(self) -> float:
         quantity_values = list(self.env.config["arm_quantity_values"])
@@ -298,14 +291,14 @@ class WaveHeuristicSolver:
             int(value) * float(prob)
             for value, prob in zip(quantity_values, quantity_probs)
         ) / total_prob
-        return self.env.service_time_multipliers["arm"] * (
+        return (
             self._expected_ammo_pipeline_time()
             + expected_quantity * self._arm_unit_mean
         )
 
     def _fuel_work(self, aircraft) -> float:
         if aircraft.fuel_status == 0:
-            return self.env.service_time_multipliers["fuel"] * (
+            return (
                 1.0 - aircraft.fuel_level
             ) / float(self.env.config["fuel_rate_per_minute"])
         if aircraft.fuel_status == 1:
@@ -327,19 +320,14 @@ class WaveHeuristicSolver:
                 "inspection",
                 aircraft_id,
             )
-            + self.env.service_time_multipliers["inspection"]
-            * float(self.env.config["inspection_time_mean"])
+            + float(self.env.config["inspection_time_mean"])
         )
 
     def _arm_work(self, aircraft) -> float:
         if aircraft.arm_status == 0:
             return (
-                self.env.service_time_multipliers["arm"]
-                * (
-                    self._expected_ammo_pipeline_time()
-                    + aircraft.arm_quantity_required
-                    * self._arm_unit_mean
-                )
+                self._expected_ammo_pipeline_time()
+                + aircraft.arm_quantity_required * self._arm_unit_mean
                 + self.env._spot_transfer_time(aircraft.spot_id)
             )
         if aircraft.arm_status == 1:
@@ -351,11 +339,7 @@ class WaveHeuristicSolver:
         if aircraft.arm_status != 0:
             return self._arm_work(aircraft)
         return (
-            self.env.service_time_multipliers["arm"]
-            * (
-                self._expected_ammo_pipeline_time()
-                + aircraft.arm_quantity_required
-                * self._arm_unit_mean
-            )
+            self._expected_ammo_pipeline_time()
+            + aircraft.arm_quantity_required * self._arm_unit_mean
             + self.env._expected_service_vehicle_travel("arm", aircraft_id)
         )

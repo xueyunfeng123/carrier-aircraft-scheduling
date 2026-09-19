@@ -486,8 +486,8 @@ a clearly documented physical assumption.
 - Use SSH public-key authentication. Never store passwords, private keys, or
   access tokens in this repository or its documentation.
 - Remote checkout: `/home/xueyf/carrier-aircraft-scheduling`.
-- Dynamic-disruption work runs from
-  `experiment/dynamic-disruption-rl`.
+- RL optimization work runs from
+  `experiment/disruption-domain-randomization`.
 - The host provides eight NVIDIA RTX A6000 48 GB GPUs. Check current GPU
   utilization before selecting a device; do not terminate or interfere with
   other users' processes.
