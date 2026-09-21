@@ -248,6 +248,8 @@ def main() -> None:
     parser.add_argument("--beam-rollout-events", type=int, default=2)
     parser.add_argument("--beam-rollout-samples", type=int, default=1)
     parser.add_argument("--beam-search-seed", type=int, default=17)
+    parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
+    parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
     args = parser.parse_args()
 
     config = build_config(args)
@@ -263,6 +265,8 @@ def main() -> None:
             "deterministic": not args.rl_stochastic,
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
+            "value_rerank_top_k": args.rl_value_rerank_top_k,
+            "value_rerank_seed": args.rl_value_rerank_seed,
         }
         if args.solver == "rl_beam":
             solver_options.update(

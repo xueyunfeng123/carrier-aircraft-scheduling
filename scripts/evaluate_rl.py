@@ -26,6 +26,13 @@ def main() -> None:
     parser.add_argument("--target-rank-prior", type=float)
     parser.add_argument("--low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--disable-low-rank-prior", action="store_true")
+    parser.add_argument(
+        "--value-rerank-top-k",
+        type=int,
+        default=1,
+        help="rerank the actor's top K complete actions with one-step value estimates",
+    )
+    parser.add_argument("--value-rerank-seed", type=int, default=0)
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -69,6 +76,8 @@ def main() -> None:
                 "target_rank_prior": args.target_rank_prior,
                 "low_rank_prior_scale": args.low_rank_prior_scale,
                 "disable_low_rank_prior": args.disable_low_rank_prior,
+                "value_rerank_top_k": args.value_rerank_top_k,
+                "value_rerank_seed": args.value_rerank_seed,
             },
         )
         for run_id in range(args.runs)

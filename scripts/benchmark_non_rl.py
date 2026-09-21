@@ -60,6 +60,8 @@ def main() -> None:
     parser.add_argument("--beam-rollout-events", type=int, default=2)
     parser.add_argument("--beam-rollout-samples", type=int, default=1)
     parser.add_argument("--beam-search-seed", type=int, default=17)
+    parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
+    parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -121,6 +123,12 @@ def main() -> None:
                     ),
                     "disable_low_rank_prior": (
                         args.rl_disable_low_rank_prior
+                    ),
+                    "value_rerank_top_k": (
+                        args.rl_value_rerank_top_k
+                    ),
+                    "value_rerank_seed": (
+                        args.rl_value_rerank_seed
                     ),
                 }
             elif solver_name == "rl_beam":
