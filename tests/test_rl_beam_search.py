@@ -184,6 +184,14 @@ class RLBeamSearchTest(unittest.TestCase):
                 policy=_ToyPolicy(),
             )
 
+    def test_risk_alpha_must_be_a_probability(self) -> None:
+        with self.assertRaisesRegex(ValueError, "risk_alpha"):
+            RLBeamSearchSolver(
+                _ToyEnvironment(),
+                risk_alpha=0.0,
+                policy=_ToyPolicy(),
+            )
+
     def test_rollout_may_finish_exactly_at_action_limit(self) -> None:
         solver = RLBeamSearchSolver(
             _ToyEnvironment(),

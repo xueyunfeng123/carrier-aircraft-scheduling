@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import random
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Tuple
@@ -53,6 +54,7 @@ class RLBeamSearchSolver:
         max_rollout_actions: int = 1000,
         value_leaf_weight: float = 0.0,
         risk_weight: float = 0.0,
+        risk_alpha: float = 0.25,
         policy: Optional[RankedPolicy] = None,
         **rl_options: Any,
     ):
@@ -70,6 +72,8 @@ class RLBeamSearchSolver:
             raise ValueError("value_leaf_weight must be non-negative")
         if not 0.0 <= risk_weight <= 1.0:
             raise ValueError("risk_weight must be in [0, 1]")
+        if not 0.0 < risk_alpha <= 1.0:
+            raise ValueError("risk_alpha must be in (0, 1]")
 
         self.env = env
         self.beam_width = int(beam_width)
@@ -81,6 +85,7 @@ class RLBeamSearchSolver:
         self.max_rollout_actions = int(max_rollout_actions)
         self.value_leaf_weight = float(value_leaf_weight)
         self.risk_weight = float(risk_weight)
+        self.risk_alpha = float(risk_alpha)
         self.policy = policy or RLSolver(
             env,
             checkpoint=checkpoint,
@@ -217,9 +222,17 @@ class RLBeamSearchSolver:
             )
         sample_count = float(len(scores))
         mean_terminal = sum(terminal_estimates) / sample_count
+        lower_count = max(
+            1,
+            int(math.ceil(self.risk_alpha * len(terminal_estimates))),
+        )
+        lower_cvar = (
+            sum(sorted(terminal_estimates)[:lower_count])
+            / float(lower_count)
+        )
         robust_terminal = (
             (1.0 - self.risk_weight) * mean_terminal
-            + self.risk_weight * min(terminal_estimates)
+            + self.risk_weight * lower_cvar
         )
         return (
             robust_terminal,
