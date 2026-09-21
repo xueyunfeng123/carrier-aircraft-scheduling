@@ -202,9 +202,12 @@ evaluation scenarios.
 | `rl/model.py` | Hierarchical policy/value network with action-conditioned aircraft logits |
 | `rl/behavior_cloning.py` | Heuristic demonstration collection and policy pretraining |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
+| `rl/value_calibration.py` | Complete-trajectory value targets, critic-only fitting, calibration metrics, and rerank metadata validation |
 | `scripts/evaluation_defaults.py` | Fixed training and evaluation seeds, horizon, and run count |
 | `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
 | `scripts/evaluate_rl.py` | Checkpoint evaluation |
+| `scripts/calibrate_value.py` | Offline critic calibration with disjoint fitting and selection seeds |
+| `scripts/evaluate_value.py` | Held-out critic metrics and paired one-step value-rerank evaluation |
 | `scripts/random_policy_test.py` | Legacy random-policy timing report |
 | `scripts/benchmark_non_rl.py` | Reproducible benchmark for non-RL solvers and an optional RL checkpoint |
 | `outputs/` | Tracked baseline CSV results and comparison figures |
@@ -292,6 +295,10 @@ python -m scripts.benchmark_non_rl \
   --rl-checkpoint checkpoints/rl_policy.pt \
   --rl-label rl_bc_ppo \
   --output outputs/all_solver_benchmark_60min_seed10007.csv
+
+# Calibrate the retained multi-load critic and evaluate one-step reranking
+PYTHON_BIN=python DEVICE=cuda \
+  bash scripts/run_value_calibration_experiment.sh
 
 # Syntax smoke check
 python -m compileall -q env solution rl scripts
@@ -474,6 +481,21 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 - The retained RL checkpoints show no strict batch-SOC improvement in the
   tested 60-minute and 47.5-minute scenarios, so do not claim a sortie gain
   from CBS.
+
+### `rl/value-calibration`
+
+- Fits only the retained multi-load checkpoint's linear value head on complete
+  deterministic trajectories; actor and shared encoders remain frozen.
+- Uses seeds `42001-42010` for fitting, `41001-41005` for model selection, and
+  untouched seeds `43001-43005` for final evaluation across 47.5, 52.5, 57.5,
+  62.5, and 67.5-minute wave intervals.
+- Seeds `70001-70050` are reserved and explicitly rejected.
+- Optional top-K inference reranks complete legal actor actions with a
+  one-step reward plus calibrated next-state value estimate. Candidate
+  simulations use common newly seeded randomness and never read the live
+  environment's future random stream.
+- Reproduction protocol and measured results are in
+  `doc/value_calibration.md`.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

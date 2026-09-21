@@ -52,6 +52,8 @@ def main() -> None:
     parser.add_argument("--rl-target-rank-prior", type=float)
     parser.add_argument("--rl-low-rank-prior-scale", type=float, default=1.0)
     parser.add_argument("--rl-disable-low-rank-prior", action="store_true")
+    parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
+    parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -106,6 +108,12 @@ def main() -> None:
                     ),
                     "disable_low_rank_prior": (
                         args.rl_disable_low_rank_prior
+                    ),
+                    "value_rerank_top_k": (
+                        args.rl_value_rerank_top_k
+                    ),
+                    "value_rerank_seed": (
+                        args.rl_value_rerank_seed
                     ),
                 }
 

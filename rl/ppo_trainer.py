@@ -130,6 +130,171 @@ class PPOTrainer:
         action["_target_aux"] = target_aux_values
         return action, float(log_prob.item()), float(value.item())
 
+    def rank_actions(
+        self,
+        encoded,
+        env,
+        top_k: int,
+        temperature: float = 1.0,
+    ):
+        """Rank complete legal actions by hierarchical policy probability."""
+
+        if top_k < 1:
+            raise ValueError("top_k must be positive")
+        if temperature <= 0.0:
+            raise ValueError("temperature must be positive")
+
+        torch = self.torch
+        batch = to_torch_batch(encoded, self.device)
+        pair_high = []
+        pair_low = []
+        pair_scores = []
+        pair_target_masks = []
+        pair_target_aux = []
+        with torch.no_grad():
+            high_logits, low_logits, _ = self.model(
+                batch["aircraft"],
+                batch["global"],
+                batch["targets"],
+                batch["low_aux"],
+            )
+            high_dist = masked_categorical(
+                high_logits / temperature,
+                batch["high_mask"],
+            )
+            for high_action in range(high_logits.shape[-1]):
+                if not bool(batch["high_mask"][0, high_action]):
+                    continue
+                selected_low_logits = select_low_action_logits(
+                    low_logits,
+                    torch.tensor(
+                        [high_action],
+                        dtype=torch.long,
+                        device=self.device,
+                    ),
+                )
+                low_mask = batch["low_masks"][0, high_action].unsqueeze(0)
+                low_dist = masked_categorical(
+                    selected_low_logits / temperature,
+                    low_mask,
+                )
+                for low_action in torch.nonzero(
+                    low_mask[0],
+                    as_tuple=False,
+                ).flatten().tolist():
+                    target_mask, target_aux = target_context_for_action(
+                        env,
+                        encoded,
+                        high_action,
+                        low_action,
+                    )
+                    pair_high.append(high_action)
+                    pair_low.append(low_action)
+                    pair_scores.append(
+                        float(
+                            high_dist.logits[0, high_action].item()
+                            + low_dist.logits[0, low_action].item()
+                        )
+                    )
+                    pair_target_masks.append(target_mask)
+                    pair_target_aux.append(target_aux)
+
+            pair_count = len(pair_high)
+            high_actions = torch.tensor(
+                pair_high,
+                dtype=torch.long,
+                device=self.device,
+            )
+            low_actions = torch.tensor(
+                pair_low,
+                dtype=torch.long,
+                device=self.device,
+            )
+            target_masks = torch.tensor(
+                pair_target_masks,
+                dtype=torch.bool,
+                device=self.device,
+            )
+            target_aux = torch.tensor(
+                pair_target_aux,
+                dtype=torch.float32,
+                device=self.device,
+            )
+            _, _, target_logits, _ = self.model.forward_with_targets(
+                batch["aircraft"].expand(pair_count, -1, -1),
+                batch["global"].expand(pair_count, -1),
+                batch["targets"].expand(pair_count, -1, -1),
+                target_aux,
+                high_actions,
+                low_actions,
+                batch["low_aux"].expand(pair_count, -1, -1, -1),
+            )
+
+            ranked = []
+            for pair_index, (high_action, low_action) in enumerate(
+                zip(pair_high, pair_low)
+            ):
+                target_dist = masked_categorical(
+                    target_logits[pair_index].unsqueeze(0)
+                    / temperature,
+                    target_masks[pair_index].unsqueeze(0),
+                )
+                for target_action in torch.nonzero(
+                    target_masks[pair_index],
+                    as_tuple=False,
+                ).flatten().tolist():
+                    action = apply_target_slot(
+                        encoded,
+                        {
+                            "high_level": high_action,
+                            "aircraft_id": low_action,
+                        },
+                        target_action,
+                    )
+                    action["_target_mask"] = pair_target_masks[
+                        pair_index
+                    ]
+                    action["_target_aux"] = pair_target_aux[pair_index]
+                    score = (
+                        pair_scores[pair_index]
+                        + float(
+                            target_dist.logits[
+                                0,
+                                target_action,
+                            ].item()
+                        )
+                    )
+                    ranked.append((action, score))
+
+        ranked.sort(
+            key=lambda item: (
+                -item[1],
+                item[0]["high_level"],
+                item[0]["aircraft_id"],
+                item[0]["target_slot"],
+            )
+        )
+        greedy, _, _ = self.select_action(
+            encoded,
+            env,
+            deterministic=True,
+            temperature=temperature,
+        )
+        greedy_key = _action_key(greedy)
+        greedy_item = next(
+            item
+            for item in ranked
+            if _action_key(item[0]) == greedy_key
+        )
+        return [
+            greedy_item,
+            *(
+                item
+                for item in ranked
+                if _action_key(item[0]) != greedy_key
+            ),
+        ][:top_k]
+
     def update(self, buffer) -> Dict[str, float]:
         torch = self.torch
         if len(buffer) == 0:
@@ -233,3 +398,11 @@ class PPOTrainer:
                     "entropy": float(entropy.item()),
                 }
         return last_stats
+
+
+def _action_key(action):
+    return (
+        int(action["high_level"]),
+        int(action["aircraft_id"]),
+        int(action["target_slot"]),
+    )

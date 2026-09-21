@@ -240,6 +240,8 @@ def main() -> None:
     parser.add_argument("--rl-stochastic", action="store_true")
     parser.add_argument("--rl-hidden-dim", type=int, default=128)
     parser.add_argument("--rl-aircraft-embed-dim", type=int, default=64)
+    parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
+    parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
     args = parser.parse_args()
 
     config = build_config(args)
@@ -255,6 +257,8 @@ def main() -> None:
             "deterministic": not args.rl_stochastic,
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
+            "value_rerank_top_k": args.rl_value_rerank_top_k,
+            "value_rerank_seed": args.rl_value_rerank_seed,
         }
     results = [
         run_episode(
