@@ -1,12 +1,14 @@
-"""Offline critic calibration from complete policy trajectories."""
+"""Offline critic calibration from trajectories and counterfactual successors."""
 
 from __future__ import annotations
 
+import copy
 import math
 import random
 import statistics
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch.nn import functional as F
@@ -17,7 +19,9 @@ from rl.ppo_trainer import PPOTrainer
 from rl.train_config import PPOConfig
 
 
-VALUE_CALIBRATION_VERSION = 1
+VALUE_CALIBRATION_VERSION = 2
+FROZEN_EVALUATION_SEED_START = 70_001
+FROZEN_EVALUATION_SEED_END = 70_050
 
 
 @dataclass
@@ -37,6 +41,45 @@ class ValueSample:
     seed: int
     wave_interval: float
     time_fraction: float
+    source_decision_index: int = -1
+    candidate_rank: int = -1
+    action_key: Optional[Tuple[int, int, int]] = None
+    branch_seed: Optional[int] = None
+
+
+def validate_development_seeds(
+    seeds: Sequence[int],
+    partition_name: str,
+) -> List[int]:
+    """Validate one explicit, non-frozen development-seed partition."""
+
+    normalized = [int(seed) for seed in seeds]
+    if not normalized:
+        raise ValueError(f"{partition_name} seeds are required")
+    if any(seed <= 0 for seed in normalized):
+        raise ValueError(f"{partition_name} seeds must be positive")
+    duplicates = sorted(
+        seed
+        for seed in set(normalized)
+        if normalized.count(seed) > 1
+    )
+    if duplicates:
+        raise ValueError(
+            f"{partition_name} seeds contain duplicates: {duplicates}"
+        )
+    forbidden = sorted(
+        seed
+        for seed in normalized
+        if FROZEN_EVALUATION_SEED_START
+        <= seed
+        <= FROZEN_EVALUATION_SEED_END
+    )
+    if forbidden:
+        raise ValueError(
+            "seeds 70001-70050 are forbidden: "
+            f"{forbidden}"
+        )
+    return normalized
 
 
 def compute_value_targets(
@@ -294,6 +337,289 @@ def collect_value_samples(
     )
 
 
+def collect_counterfactual_value_samples(
+    model,
+    configs: Sequence[Dict[str, Any]],
+    seeds: Sequence[int],
+    device: str,
+    reward_config: PPOConfig,
+    stride: int = 20,
+    max_branch_states: int = 8,
+    top_k: int = 4,
+    workers: int = 1,
+    branch_seed: int = 52_000,
+    max_steps: int = 100_000,
+) -> List[ValueSample]:
+    """Collect MC remaining-sortie targets for actor-ranked successors.
+
+    Branch states are sampled from deterministic base-actor trajectories. Each
+    candidate starts from an independently cloned environment with the same
+    branch RNG seed, then follows the deterministic actor to termination.
+    """
+
+    for name, value in (
+        ("stride", stride),
+        ("max_branch_states", max_branch_states),
+        ("top_k", top_k),
+        ("workers", workers),
+        ("max_steps", max_steps),
+    ):
+        if int(value) < 1:
+            raise ValueError(f"{name} must be positive")
+    normalized_seeds = validate_development_seeds(
+        seeds,
+        "counterfactual",
+    )
+    if not configs:
+        raise ValueError("at least one environment config is required")
+
+    model.eval()
+    executor: Optional[Executor] = None
+    if workers > 1:
+        executor = ThreadPoolExecutor(max_workers=int(workers))
+    try:
+        samples: List[ValueSample] = []
+        for config_index, config in enumerate(configs):
+            for seed in normalized_seeds:
+                samples.extend(
+                    _collect_counterfactual_trajectory(
+                        model=model,
+                        env_config=config,
+                        seed=seed,
+                        config_index=config_index,
+                        device=device,
+                        reward_config=reward_config,
+                        stride=int(stride),
+                        max_branch_states=int(max_branch_states),
+                        top_k=int(top_k),
+                        branch_seed=int(branch_seed),
+                        max_steps=int(max_steps),
+                        executor=executor,
+                    )
+                )
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
+    if not samples:
+        raise RuntimeError("counterfactual collection produced no samples")
+    return samples
+
+
+def clone_environment_for_counterfactual(
+    env: CarrierAircraftSchedulingEnv,
+    branch_seed: int,
+) -> CarrierAircraftSchedulingEnv:
+    """Clone observable state without reading the live future RNG state."""
+
+    branch_rng = random.Random(int(branch_seed))
+    return copy.deepcopy(env, {id(env.rng): branch_rng})
+
+
+def _collect_counterfactual_trajectory(
+    model,
+    env_config: Dict[str, Any],
+    seed: int,
+    config_index: int,
+    device: str,
+    reward_config: PPOConfig,
+    stride: int,
+    max_branch_states: int,
+    top_k: int,
+    branch_seed: int,
+    max_steps: int,
+    executor: Optional[Executor],
+) -> List[ValueSample]:
+    env = CarrierAircraftSchedulingEnv(env_config)
+    env.reset(seed=seed)
+    trainer = PPOTrainer(
+        model,
+        optimizer=None,
+        config=reward_config,
+        device=device,
+    )
+    samples: List[ValueSample] = []
+    decision_index = 0
+    sampled_states = 0
+    steps = 0
+
+    while (
+        not env.done
+        and sampled_states < max_branch_states
+        and steps < max_steps
+    ):
+        encoded = encode_observation(env)
+        if not any(encoded.high_mask):
+            _, _, done, info = env.step(None)
+            if info["invalid_action"]:
+                raise RuntimeError(
+                    "base actor trajectory failed to advance legally"
+                )
+            steps += 1
+            if done:
+                break
+            continue
+
+        if decision_index % stride == 0:
+            candidates = trainer.rank_actions(
+                encoded,
+                env,
+                top_k=top_k,
+            )
+            shared_seed = _counterfactual_branch_seed(
+                branch_seed,
+                seed,
+                config_index,
+                decision_index,
+            )
+            prepared = [
+                (
+                    trainer,
+                    clone_environment_for_counterfactual(
+                        env,
+                        shared_seed,
+                    ),
+                    action,
+                    rank,
+                    seed,
+                    decision_index,
+                    shared_seed,
+                    max_steps,
+                )
+                for rank, (action, _) in enumerate(candidates)
+            ]
+            if executor is None:
+                branch_samples = [
+                    _rollout_counterfactual_candidate(*arguments)
+                    for arguments in prepared
+                ]
+            else:
+                branch_samples = list(
+                    executor.map(
+                        _rollout_counterfactual_candidate_from_tuple,
+                        prepared,
+                    )
+                )
+            samples.extend(branch_samples)
+            sampled_states += 1
+
+        action, _, _ = trainer.select_action(
+            encoded,
+            env,
+            deterministic=True,
+        )
+        _, _, _, info = env.step(action)
+        if info["invalid_action"]:
+            raise RuntimeError("base actor emitted an illegal action")
+        decision_index += 1
+        steps += 1
+
+    if (
+        not env.done
+        and sampled_states < max_branch_states
+        and steps >= max_steps
+    ):
+        raise RuntimeError(
+            f"base actor trajectory exceeded {max_steps} steps for seed {seed}"
+        )
+    return samples
+
+
+def _rollout_counterfactual_candidate_from_tuple(arguments) -> ValueSample:
+    return _rollout_counterfactual_candidate(*arguments)
+
+
+def _rollout_counterfactual_candidate(
+    trainer: PPOTrainer,
+    env: CarrierAircraftSchedulingEnv,
+    action: Dict[str, Any],
+    candidate_rank: int,
+    source_seed: int,
+    source_decision_index: int,
+    branch_seed: int,
+    max_steps: int,
+) -> ValueSample:
+    _, _, done, info = env.step(action)
+    if info["invalid_action"]:
+        raise RuntimeError("actor ranking emitted an illegal candidate action")
+    steps = 1
+    while not done and steps < max_steps:
+        encoded = encode_observation(env)
+        if any(encoded.high_mask):
+            break
+        _, _, done, info = env.step(None)
+        if info["invalid_action"]:
+            raise RuntimeError(
+                "counterfactual successor failed to advance legally"
+            )
+        steps += 1
+    if not done and steps >= max_steps:
+        raise RuntimeError(
+            "counterfactual successor exceeded max_steps before a decision"
+        )
+
+    successor_observation = encode_observation(env)
+    successor_time_fraction = float(env.time) / max(
+        1.0,
+        float(env.config["simulation_duration"]),
+    )
+    successor_sorties = int(
+        env.get_evaluation_metrics()["total_sorties_completed"]
+    )
+    while not env.done and steps < max_steps:
+        encoded = encode_observation(env)
+        if any(encoded.high_mask):
+            rollout_action, _, _ = trainer.select_action(
+                encoded,
+                env,
+                deterministic=True,
+            )
+        else:
+            rollout_action = None
+        _, _, _, info = env.step(rollout_action)
+        if info["invalid_action"]:
+            raise RuntimeError(
+                "deterministic actor rollout emitted an illegal action"
+            )
+        steps += 1
+    if not env.done:
+        raise RuntimeError(
+            "counterfactual actor rollout exceeded max_steps"
+        )
+
+    final_sorties = int(
+        env.get_evaluation_metrics()["total_sorties_completed"]
+    )
+    return ValueSample(
+        observation=successor_observation,
+        target=float(final_sorties - successor_sorties),
+        seed=int(source_seed),
+        wave_interval=float(env.config["wave_interval"]),
+        time_fraction=successor_time_fraction,
+        source_decision_index=int(source_decision_index),
+        candidate_rank=int(candidate_rank),
+        action_key=(
+            int(action["high_level"]),
+            int(action["aircraft_id"]),
+            int(action["target_slot"]),
+        ),
+        branch_seed=int(branch_seed),
+    )
+
+
+def _counterfactual_branch_seed(
+    base_seed: int,
+    scenario_seed: int,
+    config_index: int,
+    decision_index: int,
+) -> int:
+    return (
+        int(base_seed)
+        + int(scenario_seed) * 1_000_003
+        + int(config_index) * 10_000_019
+        + int(decision_index) * 100_003
+    )
+
+
 def predict_values(
     model,
     samples: Sequence[ValueSample],
@@ -499,6 +825,15 @@ def calibration_metadata(
     gae_lambda: float,
 ) -> Dict[str, Any]:
     intervals = sorted({sample.wave_interval for sample in samples})
+    branch_states = {
+        (
+            sample.seed,
+            sample.wave_interval,
+            sample.source_decision_index,
+        )
+        for sample in samples
+        if sample.source_decision_index >= 0
+    }
     return {
         "version": VALUE_CALIBRATION_VERSION,
         "target_method": target_method,
@@ -513,6 +848,7 @@ def calibration_metadata(
         "training_wave_intervals": intervals,
         "wave_interval_range": [min(intervals), max(intervals)],
         "training_samples": len(samples),
+        "training_branch_states": len(branch_states),
     }
 
 
@@ -524,9 +860,22 @@ def validate_rerank_calibration(
     metadata = extra.get(
         "value_calibration"
     )
-    if not metadata or metadata.get("version") != VALUE_CALIBRATION_VERSION:
+    if not metadata or metadata.get("version") not in (
+        1,
+        VALUE_CALIBRATION_VERSION,
+    ):
         raise ValueError(
             "value rerank requires a checkpoint with value_calibration metadata"
+        )
+    if metadata["version"] == VALUE_CALIBRATION_VERSION and (
+        metadata.get("target_method")
+        != "counterfactual_mc_remaining_sorties"
+        or metadata.get("collection", {}).get("method")
+        != "counterfactual_successor"
+    ):
+        raise ValueError(
+            "version 2 value calibration metadata must describe "
+            "counterfactual successor MC targets"
         )
     interval_range = metadata.get("wave_interval_range")
     if (

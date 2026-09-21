@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import random
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -24,9 +26,12 @@ from rl.value_calibration import (
     ValueSample,
     calibrate_value_head,
     calibration_metric_rows,
+    clone_environment_for_counterfactual,
     collect_complete_trajectory,
+    collect_counterfactual_value_samples,
     compute_value_targets,
     trajectories_to_samples,
+    validate_development_seeds,
     validate_rerank_calibration,
 )
 from scripts.calibrate_value import (
@@ -48,6 +53,18 @@ def small_env_config():
         "launch_time": 0.5,
         "wave_interval": 60.0,
         "simulation_duration": 0.5,
+        "spatial_graph_enabled": False,
+    }
+
+
+def counterfactual_env_config():
+    return {
+        "num_aircraft": 2,
+        "group_size": 1,
+        "num_parking_spots": 2,
+        "launch_time": 0.5,
+        "wave_interval": 10.0,
+        "simulation_duration": 20.0,
         "spatial_graph_enabled": False,
     }
 
@@ -104,6 +121,135 @@ class ValueTargetTest(unittest.TestCase):
         self.assertEqual(len(trajectory.observations), 1)
         self.assertEqual(trajectory.rewards, [1.0])
         self.assertEqual([sample.target for sample in samples], [1.0])
+
+
+class CounterfactualCollectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        torch.manual_seed(1)
+        self.model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            hidden_dim=16,
+            aircraft_embed_dim=8,
+            target_embed_dim=8,
+        )
+
+    def test_collects_top_k_successors_with_common_random_numbers(
+        self,
+    ) -> None:
+        samples = collect_counterfactual_value_samples(
+            self.model,
+            [counterfactual_env_config()],
+            [42001],
+            device="cpu",
+            reward_config=PPOConfig(),
+            stride=1,
+            max_branch_states=1,
+            top_k=2,
+            workers=1,
+            branch_seed=99,
+            max_steps=1000,
+        )
+
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(
+            [sample.candidate_rank for sample in samples],
+            [0, 1],
+        )
+        self.assertEqual(
+            len({sample.action_key for sample in samples}),
+            2,
+        )
+        self.assertEqual(
+            len({sample.branch_seed for sample in samples}),
+            1,
+        )
+        self.assertEqual(
+            [sample.target for sample in samples],
+            [1.0, 1.0],
+        )
+        self.assertTrue(
+            all(
+                sample.source_decision_index == 0
+                for sample in samples
+            )
+        )
+
+    def test_stride_limit_and_workers_are_deterministic(self) -> None:
+        options = {
+            "model": self.model,
+            "configs": [counterfactual_env_config()],
+            "seeds": [42001],
+            "device": "cpu",
+            "reward_config": PPOConfig(),
+            "stride": 2,
+            "max_branch_states": 2,
+            "top_k": 2,
+            "branch_seed": 99,
+            "max_steps": 1000,
+        }
+
+        serial = collect_counterfactual_value_samples(
+            **options,
+            workers=1,
+        )
+        parallel = collect_counterfactual_value_samples(
+            **options,
+            workers=2,
+        )
+
+        serial_rows = [
+            (
+                sample.source_decision_index,
+                sample.candidate_rank,
+                sample.action_key,
+                sample.branch_seed,
+                sample.target,
+            )
+            for sample in serial
+        ]
+        parallel_rows = [
+            (
+                sample.source_decision_index,
+                sample.candidate_rank,
+                sample.action_key,
+                sample.branch_seed,
+                sample.target,
+            )
+            for sample in parallel
+        ]
+        self.assertEqual(serial_rows, parallel_rows)
+        self.assertEqual(
+            sorted({sample.source_decision_index for sample in serial}),
+            [0, 2],
+        )
+
+    def test_clone_replaces_live_rng_without_copying_its_state(self) -> None:
+        class ForbiddenLiveRandom:
+            def __deepcopy__(self, memo):
+                raise AssertionError("live RNG state must not be copied")
+
+        env = SimpleNamespace(rng=ForbiddenLiveRandom(), marker=[1])
+
+        first = clone_environment_for_counterfactual(env, 123)
+        second = clone_environment_for_counterfactual(env, 123)
+
+        self.assertIs(first.rng.__class__, random.Random)
+        self.assertIs(second.rng.__class__, random.Random)
+        self.assertEqual(first.rng.random(), second.rng.random())
+        self.assertIsNot(first.rng, second.rng)
+        self.assertIs(env.rng.__class__, ForbiddenLiveRandom)
+
+    def test_collection_controls_require_positive_values(self) -> None:
+        with self.assertRaisesRegex(ValueError, "stride must be positive"):
+            collect_counterfactual_value_samples(
+                self.model,
+                [counterfactual_env_config()],
+                [42001],
+                device="cpu",
+                reward_config=PPOConfig(),
+                stride=0,
+            )
 
 
 class CriticFitTest(unittest.TestCase):
@@ -320,6 +466,35 @@ class ValueRerankTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             validate_rerank_calibration(payload, 60.0)
 
+    def test_version_two_metadata_requires_counterfactual_target(self) -> None:
+        reward_config = PPOConfig()
+        payload = {
+            "extra": {
+                "ppo_config": {
+                    "gamma": reward_config.gamma,
+                    "env_reward_scale": reward_config.env_reward_scale,
+                    "sortie_bonus": reward_config.sortie_bonus,
+                    "miss_penalty": reward_config.miss_penalty,
+                    "progress_shaping": reward_config.progress_shaping,
+                },
+                "value_calibration": {
+                    "version": 2,
+                    "target_method": "mc",
+                    "wave_interval_range": [47.5, 67.5],
+                    "gamma": reward_config.gamma,
+                    "reward_config": {
+                        "env_reward_scale": 0.0,
+                        "sortie_bonus": 1.0,
+                        "miss_penalty": 0.0,
+                        "progress_shaping": 0.0,
+                    },
+                },
+            }
+        }
+
+        with self.assertRaisesRegex(ValueError, "counterfactual"):
+            validate_rerank_calibration(payload, 60.0)
+
     def test_rerank_selects_highest_one_step_value(self) -> None:
         env = CarrierAircraftSchedulingEnv(small_env_config())
         env.reset(seed=7)
@@ -390,6 +565,10 @@ class CalibrationSeedProtocolTest(unittest.TestCase):
             validate_seed_protocol([41001], [41001])
         with self.assertRaisesRegex(ValueError, "forbidden"):
             validate_seed_protocol([42001], [70001])
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            validate_seed_protocol([42001, 42001], [41001])
+        with self.assertRaisesRegex(ValueError, "positive"):
+            validate_development_seeds([0], "calibration")
 
     def test_evaluation_seeds_are_disjoint(self) -> None:
         payload = {
@@ -406,6 +585,29 @@ class CalibrationSeedProtocolTest(unittest.TestCase):
             validate_evaluation_seeds([41001], payload)
         with self.assertRaisesRegex(ValueError, "forbidden"):
             validate_evaluation_seeds([70050], payload)
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            validate_evaluation_seeds([43001, 43001], payload)
+
+    def test_version_two_metadata_requires_explicit_partitions(self) -> None:
+        payload = {
+            "extra": {
+                "value_calibration": {
+                    "version": 2,
+                }
+            }
+        }
+
+        with self.assertRaisesRegex(ValueError, "explicit"):
+            validate_evaluation_seeds([43001], payload)
+
+        payload["extra"]["value_calibration"].update(
+            {
+                "calibration_seeds": [42001],
+                "selection_seeds": [42001],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            validate_evaluation_seeds([43001], payload)
 
 
 if __name__ == "__main__":

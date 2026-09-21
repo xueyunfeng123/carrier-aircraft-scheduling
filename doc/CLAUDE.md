@@ -202,7 +202,7 @@ evaluation scenarios.
 | `rl/model.py` | Hierarchical policy/value network with action-conditioned aircraft logits |
 | `rl/behavior_cloning.py` | Heuristic demonstration collection and policy pretraining |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
-| `rl/value_calibration.py` | Complete-trajectory value targets, critic-only fitting, calibration metrics, and rerank metadata validation |
+| `rl/value_calibration.py` | Counterfactual successor MC targets, CRN rollouts, critic-only fitting, calibration metrics, and rerank metadata validation |
 | `scripts/evaluation_defaults.py` | Fixed training and evaluation seeds, horizon, and run count |
 | `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
 | `scripts/evaluate_rl.py` | Checkpoint evaluation |

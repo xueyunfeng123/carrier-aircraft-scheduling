@@ -12,7 +12,10 @@ export PYTHONPATH="${PYTHONPATH:-.}"
   --selection-seeds 41001 41002 41003 41004 41005 \
   --wave-intervals 47.5 52.5 57.5 62.5 67.5 \
   --waves 12 \
-  --target-method mc \
+  --stride 20 \
+  --max-branch-states 8 \
+  --top-k 4 \
+  --workers 4 \
   --epochs 100 \
   --minibatch-size 512 \
   --learning-rate 0.001 \

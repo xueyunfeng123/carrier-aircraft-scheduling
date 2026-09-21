@@ -1,4 +1,4 @@
-"""Calibrate an existing policy checkpoint's critic on complete trajectories."""
+"""Calibrate a critic on counterfactual actor-ranked successor states."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
-import torch
-
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG
 from rl.checkpoint import load_checkpoint, save_checkpoint
@@ -18,8 +16,9 @@ from rl.value_calibration import (
     calibrate_value_head,
     calibration_metadata,
     calibration_metric_rows,
-    collect_value_samples,
+    collect_counterfactual_value_samples,
     predict_values,
+    validate_development_seeds,
 )
 from solution.rl_solver import RLSolver
 
@@ -62,13 +61,11 @@ def main() -> None:
         default=list(DEFAULT_INTERVALS),
     )
     parser.add_argument("--waves", type=int, default=12)
-    parser.add_argument(
-        "--target-method",
-        choices=("mc", "gae"),
-        default="mc",
-    )
-    parser.add_argument("--gamma", type=float)
-    parser.add_argument("--gae-lambda", type=float, default=0.98)
+    parser.add_argument("--stride", type=int, default=20)
+    parser.add_argument("--max-branch-states", type=int, default=8)
+    parser.add_argument("--top-k", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--branch-seed", type=int, default=52_000)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--minibatch-size", type=int, default=512)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
@@ -97,28 +94,30 @@ def main() -> None:
     )
     model = solver.model
     reward_config = ppo_config_from_checkpoint(payload)
-    if args.gamma is not None:
-        reward_config.gamma = float(args.gamma)
 
-    calibration_samples = collect_value_samples(
+    collection_options = {
+        "stride": args.stride,
+        "max_branch_states": args.max_branch_states,
+        "top_k": args.top_k,
+        "workers": args.workers,
+        "branch_seed": args.branch_seed,
+        "max_steps": args.max_steps,
+    }
+    calibration_samples = collect_counterfactual_value_samples(
         model,
         configs,
         args.calibration_seeds,
         args.device,
         reward_config,
-        target_method=args.target_method,
-        gae_lambda=args.gae_lambda,
-        max_steps=args.max_steps,
+        **collection_options,
     )
-    selection_samples = collect_value_samples(
+    selection_samples = collect_counterfactual_value_samples(
         model,
         configs,
         args.selection_seeds,
         args.device,
         reward_config,
-        target_method=args.target_method,
-        gae_lambda=args.gae_lambda,
-        max_steps=args.max_steps,
+        **collection_options,
     )
     before_predictions = predict_values(
         model,
@@ -159,9 +158,9 @@ def main() -> None:
     extra["ppo_config"] = asdict(reward_config)
     metadata = calibration_metadata(
         calibration_samples,
-        args.target_method,
+        "counterfactual_mc_remaining_sorties",
         reward_config,
-        args.gae_lambda,
+        1.0,
     )
     metadata.update(
         {
@@ -173,6 +172,14 @@ def main() -> None:
             "minibatch_size": args.minibatch_size,
             "loss": args.loss,
             "fit_stats": fit_stats,
+            "collection": {
+                "method": "counterfactual_successor",
+                "stride": args.stride,
+                "max_branch_states": args.max_branch_states,
+                "top_k": args.top_k,
+                "workers": args.workers,
+                "branch_seed": args.branch_seed,
+            },
             "selection_metrics_before": _overall_row(
                 rows,
                 "before",
@@ -230,23 +237,22 @@ def validate_seed_protocol(
     calibration_seeds: Sequence[int],
     selection_seeds: Sequence[int],
 ) -> None:
-    calibration = {int(seed) for seed in calibration_seeds}
-    selection = {int(seed) for seed in selection_seeds}
-    if not calibration or not selection:
-        raise ValueError("calibration and selection seeds are required")
+    calibration = set(
+        validate_development_seeds(
+            calibration_seeds,
+            "calibration",
+        )
+    )
+    selection = set(
+        validate_development_seeds(
+            selection_seeds,
+            "selection",
+        )
+    )
     overlap = sorted(calibration & selection)
     if overlap:
         raise ValueError(
             f"calibration and selection seeds overlap: {overlap}"
-        )
-    forbidden = sorted(
-        seed
-        for seed in calibration | selection
-        if 70001 <= seed <= 70050
-    )
-    if forbidden:
-        raise ValueError(
-            f"seeds 70001-70050 are forbidden: {forbidden}"
         )
 
 

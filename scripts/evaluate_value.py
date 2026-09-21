@@ -11,8 +11,10 @@ from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.checkpoint import load_checkpoint
 from rl.value_calibration import (
     calibration_metric_rows,
+    collect_counterfactual_value_samples,
     collect_value_samples,
     predict_values,
+    validate_development_seeds,
     validate_rerank_calibration,
 )
 from scripts.analyze_paired_benchmark import exact_two_sided_sign_test
@@ -22,6 +24,7 @@ from scripts.calibrate_value import (
     DEFAULT_SELECTION_SEEDS,
     build_calibration_configs,
     ppo_config_from_checkpoint,
+    validate_seed_protocol,
     write_rows,
 )
 from scripts.solve import run_episode
@@ -53,6 +56,11 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--max-steps", type=int, default=100_000)
+    parser.add_argument("--stride", type=int)
+    parser.add_argument("--max-branch-states", type=int)
+    parser.add_argument("--top-k", type=int)
+    parser.add_argument("--workers", type=int)
+    parser.add_argument("--branch-seed", type=int)
     parser.add_argument(
         "--metrics-output",
         default="outputs/value_calibration_evaluation_seed43001_5.csv",
@@ -85,16 +93,52 @@ def main() -> None:
         device=args.device,
     )
     reward_config = ppo_config_from_checkpoint(payload)
-    samples = collect_value_samples(
-        solver.model,
-        configs,
-        args.seeds,
-        args.device,
-        reward_config,
-        target_method=metadata["target_method"],
-        gae_lambda=float(metadata["gae_lambda"]),
-        max_steps=args.max_steps,
-    )
+    collection = metadata.get("collection", {})
+    if collection.get("method") == "counterfactual_successor":
+        samples = collect_counterfactual_value_samples(
+            solver.model,
+            configs,
+            args.seeds,
+            args.device,
+            reward_config,
+            stride=_option_or_metadata(
+                args.stride,
+                collection,
+                "stride",
+            ),
+            max_branch_states=_option_or_metadata(
+                args.max_branch_states,
+                collection,
+                "max_branch_states",
+            ),
+            top_k=_option_or_metadata(
+                args.top_k,
+                collection,
+                "top_k",
+            ),
+            workers=_option_or_metadata(
+                args.workers,
+                collection,
+                "workers",
+            ),
+            branch_seed=_option_or_metadata(
+                args.branch_seed,
+                collection,
+                "branch_seed",
+            ),
+            max_steps=args.max_steps,
+        )
+    else:
+        samples = collect_value_samples(
+            solver.model,
+            configs,
+            args.seeds,
+            args.device,
+            reward_config,
+            target_method=metadata["target_method"],
+            gae_lambda=float(metadata["gae_lambda"]),
+            max_steps=args.max_steps,
+        )
     predictions = predict_values(
         solver.model,
         samples,
@@ -159,18 +203,9 @@ def validate_evaluation_seeds(
     seeds: Sequence[int],
     checkpoint_payload: Dict[str, Any] | None = None,
 ) -> None:
-    evaluation = {int(seed) for seed in seeds}
-    if not evaluation:
-        raise ValueError("evaluation seeds are required")
-    forbidden = sorted(
-        seed
-        for seed in evaluation
-        if 70001 <= seed <= 70050
+    evaluation = set(
+        validate_development_seeds(seeds, "evaluation")
     )
-    if forbidden:
-        raise ValueError(
-            f"seeds 70001-70050 are forbidden: {forbidden}"
-        )
 
     metadata = (
         checkpoint_payload.get("extra", {}).get(
@@ -180,26 +215,47 @@ def validate_evaluation_seeds(
         if checkpoint_payload is not None
         else {}
     )
-    calibration = {
-        int(seed)
-        for seed in metadata.get(
-            "calibration_seeds",
-            DEFAULT_CALIBRATION_SEEDS,
+    if (
+        int(metadata.get("version", 1)) >= 2
+        and (
+            "calibration_seeds" not in metadata
+            or "selection_seeds" not in metadata
         )
-    }
-    selection = {
-        int(seed)
-        for seed in metadata.get(
-            "selection_seeds",
-            DEFAULT_SELECTION_SEEDS,
+    ):
+        raise ValueError(
+            "version 2 value calibration metadata must record explicit "
+            "calibration and selection seed partitions"
         )
-    }
+    calibration_values = metadata.get(
+        "calibration_seeds",
+        DEFAULT_CALIBRATION_SEEDS,
+    )
+    selection_values = metadata.get(
+        "selection_seeds",
+        DEFAULT_SELECTION_SEEDS,
+    )
+    validate_seed_protocol(calibration_values, selection_values)
+    calibration = {int(seed) for seed in calibration_values}
+    selection = {int(seed) for seed in selection_values}
     overlap = sorted(evaluation & (calibration | selection))
     if overlap:
         raise ValueError(
             "evaluation seeds overlap calibration or selection seeds: "
             f"{overlap}"
         )
+
+
+def _option_or_metadata(
+    option: int | None,
+    metadata: Dict[str, Any],
+    name: str,
+) -> int:
+    value = metadata.get(name) if option is None else option
+    if value is None:
+        raise ValueError(
+            f"counterfactual calibration metadata is missing {name}"
+        )
+    return int(value)
 
 
 def evaluate_rerank_benefit(
