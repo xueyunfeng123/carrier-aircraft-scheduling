@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 from dataclasses import asdict
 from pathlib import Path
@@ -69,6 +70,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--minibatch-size", type=int, default=512)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
+    parser.add_argument("--ranking-loss-coef", type=float, default=1.0)
+    parser.add_argument(
+        "--parameter-scope",
+        choices=("value_head", "encoder"),
+        default="value_head",
+    )
     parser.add_argument(
         "--loss",
         choices=("huber", "mse"),
@@ -92,7 +99,8 @@ def main() -> None:
         checkpoint=args.checkpoint,
         device=args.device,
     )
-    model = solver.model
+    actor_model = solver.model
+    value_model = copy.deepcopy(actor_model).to(args.device)
     reward_config = ppo_config_from_checkpoint(payload)
 
     collection_options = {
@@ -104,7 +112,7 @@ def main() -> None:
         "max_steps": args.max_steps,
     }
     calibration_samples = collect_counterfactual_value_samples(
-        model,
+        actor_model,
         configs,
         args.calibration_seeds,
         args.device,
@@ -112,7 +120,7 @@ def main() -> None:
         **collection_options,
     )
     selection_samples = collect_counterfactual_value_samples(
-        model,
+        actor_model,
         configs,
         args.selection_seeds,
         args.device,
@@ -120,23 +128,25 @@ def main() -> None:
         **collection_options,
     )
     before_predictions = predict_values(
-        model,
+        value_model,
         selection_samples,
         args.device,
         args.minibatch_size,
     )
     fit_stats = calibrate_value_head(
-        model,
+        value_model,
         calibration_samples,
         args.device,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
         minibatch_size=args.minibatch_size,
         loss_name=args.loss,
+        ranking_loss_coef=args.ranking_loss_coef,
+        parameter_scope=args.parameter_scope,
         seed=args.calibration_seeds[0],
     )
     after_predictions = predict_values(
-        model,
+        value_model,
         selection_samples,
         args.device,
         args.minibatch_size,
@@ -171,9 +181,14 @@ def main() -> None:
             "learning_rate": args.learning_rate,
             "minibatch_size": args.minibatch_size,
             "loss": args.loss,
+            "ranking_loss_coef": args.ranking_loss_coef,
+            "parameter_scope": args.parameter_scope,
+            "value_only_checkpoint": args.parameter_scope == "encoder",
             "fit_stats": fit_stats,
             "collection": {
                 "method": "counterfactual_successor",
+                "state_filter": "distinct_top_k_at_least_2",
+                "sampling": "ambiguous_stride_reservoir",
                 "stride": args.stride,
                 "max_branch_states": args.max_branch_states,
                 "top_k": args.top_k,
@@ -189,12 +204,14 @@ def main() -> None:
                 "after",
             ),
             "actor_frozen": True,
+            "action_heads_frozen": True,
         }
     )
     extra["value_calibration"] = metadata
+    extra["value_only_checkpoint"] = metadata["value_only_checkpoint"]
     save_checkpoint(
         args.output_checkpoint,
-        model,
+        value_model,
         optimizer=None,
         extra=extra,
     )

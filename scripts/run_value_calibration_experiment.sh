@@ -19,6 +19,8 @@ export PYTHONPATH="${PYTHONPATH:-.}"
   --epochs 100 \
   --minibatch-size 512 \
   --learning-rate 0.001 \
+  --ranking-loss-coef 1.0 \
+  --parameter-scope encoder \
   --device "$DEVICE" \
   --metrics-output outputs/value_calibration_seed41001_5.csv \
   "$@"

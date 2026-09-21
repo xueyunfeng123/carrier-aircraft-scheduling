@@ -24,12 +24,14 @@ from rl.ppo_trainer import PPOTrainer
 from rl.train_config import PPOConfig
 from rl.value_calibration import (
     ValueSample,
+    _distinct_ranked_actions,
     calibrate_value_head,
     calibration_metric_rows,
     clone_environment_for_counterfactual,
     collect_complete_trajectory,
     collect_counterfactual_value_samples,
     compute_value_targets,
+    pairwise_ranking_loss,
     trajectories_to_samples,
     validate_development_seeds,
     validate_rerank_calibration,
@@ -164,15 +166,9 @@ class CounterfactualCollectionTest(unittest.TestCase):
             len({sample.branch_seed for sample in samples}),
             1,
         )
-        self.assertEqual(
-            [sample.target for sample in samples],
-            [1.0, 1.0],
-        )
+        self.assertEqual(len({sample.target for sample in samples}), 1)
         self.assertTrue(
-            all(
-                sample.source_decision_index == 0
-                for sample in samples
-            )
+            all(sample.source_decision_index >= 0 for sample in samples)
         )
 
     def test_stride_limit_and_workers_are_deterministic(self) -> None:
@@ -220,9 +216,38 @@ class CounterfactualCollectionTest(unittest.TestCase):
         ]
         self.assertEqual(serial_rows, parallel_rows)
         self.assertEqual(
-            sorted({sample.source_decision_index for sample in serial}),
-            [0, 2],
+            len({sample.source_decision_index for sample in serial}),
+            2,
         )
+        self.assertEqual(
+            max(sample.source_decision_index for sample in serial),
+            5,
+        )
+
+    def test_only_distinct_complete_actions_are_ambiguous(self) -> None:
+        first = {
+            "high_level": 1,
+            "aircraft_id": 2,
+            "target_slot": 3,
+        }
+        duplicate = dict(first)
+        second = {
+            "high_level": 1,
+            "aircraft_id": 2,
+            "target_slot": 4,
+        }
+
+        unambiguous = _distinct_ranked_actions(
+            [(first, 0.0), (duplicate, -1.0)]
+        )
+        ambiguous = _distinct_ranked_actions(
+            [(first, 0.0), (duplicate, -1.0), (second, -2.0)]
+        )
+
+        self.assertEqual(len(unambiguous), 1)
+        self.assertEqual(len(ambiguous), 2)
+        self.assertIs(ambiguous[0][0], first)
+        self.assertIs(ambiguous[1][0], second)
 
     def test_clone_replaces_live_rng_without_copying_its_state(self) -> None:
         class ForbiddenLiveRandom:
@@ -250,9 +275,41 @@ class CounterfactualCollectionTest(unittest.TestCase):
                 reward_config=PPOConfig(),
                 stride=0,
             )
+        with self.assertRaisesRegex(ValueError, "top_k must be at least 2"):
+            collect_counterfactual_value_samples(
+                self.model,
+                [counterfactual_env_config()],
+                [42001],
+                device="cpu",
+                reward_config=PPOConfig(),
+                top_k=1,
+            )
 
 
 class CriticFitTest(unittest.TestCase):
+    def test_pairwise_ranking_loss_rewards_correct_direction(self) -> None:
+        targets = torch.tensor([3.0, 1.0, 5.0])
+        group_ids = [("branch", 1), ("branch", 1), ("branch", 2)]
+        ordered = torch.tensor([2.0, -1.0, 0.0], requires_grad=True)
+        reversed_predictions = torch.tensor([-1.0, 2.0, 0.0])
+
+        ordered_loss = pairwise_ranking_loss(
+            ordered,
+            targets,
+            group_ids,
+        )
+        reversed_loss = pairwise_ranking_loss(
+            reversed_predictions,
+            targets,
+            group_ids,
+        )
+        ordered_loss.backward()
+
+        self.assertLess(ordered_loss.item(), reversed_loss.item())
+        self.assertLess(ordered.grad[0].item(), 0.0)
+        self.assertGreater(ordered.grad[1].item(), 0.0)
+        self.assertEqual(ordered.grad[2].item(), 0.0)
+
     def test_calibration_updates_only_value_head(self) -> None:
         model = CarrierPolicyValueNet(
             AIRCRAFT_FEATURE_DIM,
@@ -306,6 +363,71 @@ class CriticFitTest(unittest.TestCase):
             )
         )
         for name, value in actor_before.items():
+            self.assertTrue(torch.equal(value, model.state_dict()[name]))
+
+    def test_encoder_scope_freezes_all_action_parameters(self) -> None:
+        model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+            hidden_dim=16,
+            aircraft_embed_dim=8,
+            target_embed_dim=8,
+        )
+        env = CarrierAircraftSchedulingEnv(small_env_config())
+        env.reset(seed=7)
+        observation = encode_observation(env)
+        samples = [
+            ValueSample(
+                observation=copy.deepcopy(observation),
+                target=float(index),
+                seed=7,
+                wave_interval=60.0,
+                time_fraction=index / 5.0,
+            )
+            for index in range(6)
+        ]
+        action_before = {
+            name: value.clone()
+            for name, value in model.state_dict().items()
+            if not name.startswith(
+                (
+                    "aircraft_encoder.",
+                    "target_encoder.",
+                    "global_encoder.",
+                    "value_head.",
+                )
+            )
+        }
+        encoder_before = {
+            name: value.clone()
+            for name, value in model.state_dict().items()
+            if name.startswith(
+                (
+                    "aircraft_encoder.",
+                    "target_encoder.",
+                    "global_encoder.",
+                )
+            )
+        }
+
+        calibrate_value_head(
+            model,
+            samples,
+            device="cpu",
+            learning_rate=0.05,
+            epochs=5,
+            minibatch_size=6,
+            parameter_scope="encoder",
+            seed=11,
+        )
+
+        self.assertTrue(
+            any(
+                not torch.equal(value, model.state_dict()[name])
+                for name, value in encoder_before.items()
+            )
+        )
+        for name, value in action_before.items():
             self.assertTrue(torch.equal(value, model.state_dict()[name]))
 
     def test_metrics_include_load_and_horizon_groups(self) -> None:
@@ -429,6 +551,80 @@ class ValueRerankTest(unittest.TestCase):
                     checkpoint=str(checkpoint),
                     value_rerank_top_k=2,
                 )
+
+    def test_value_only_checkpoint_requires_separate_policy(self) -> None:
+        env = CarrierAircraftSchedulingEnv(small_env_config())
+        policy_model = CarrierPolicyValueNet(
+            AIRCRAFT_FEATURE_DIM,
+            GLOBAL_FEATURE_DIM,
+        )
+        value_model = copy.deepcopy(policy_model)
+        with torch.no_grad():
+            next(value_model.aircraft_encoder.parameters()).add_(1.0)
+        reward_config = PPOConfig()
+        ppo_config = {
+            "gamma": reward_config.gamma,
+            "env_reward_scale": reward_config.env_reward_scale,
+            "sortie_bonus": reward_config.sortie_bonus,
+            "miss_penalty": reward_config.miss_penalty,
+            "progress_shaping": reward_config.progress_shaping,
+        }
+        calibration = {
+            "version": 2,
+            "target_method": "counterfactual_mc_remaining_sorties",
+            "wave_interval_range": [60.0, 60.0],
+            "gamma": reward_config.gamma,
+            "reward_config": {
+                key: ppo_config[key]
+                for key in (
+                    "env_reward_scale",
+                    "sortie_bonus",
+                    "miss_penalty",
+                    "progress_shaping",
+                )
+            },
+            "collection": {"method": "counterfactual_successor"},
+            "value_only_checkpoint": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "policy.pt"
+            value_path = Path(directory) / "value.pt"
+            save_checkpoint(
+                str(policy_path),
+                policy_model,
+                extra={
+                    "observation_schema_version": (
+                        OBSERVATION_SCHEMA_VERSION
+                    ),
+                    "ppo_config": ppo_config,
+                },
+            )
+            save_checkpoint(
+                str(value_path),
+                value_model,
+                extra={
+                    "observation_schema_version": (
+                        OBSERVATION_SCHEMA_VERSION
+                    ),
+                    "ppo_config": ppo_config,
+                    "value_calibration": calibration,
+                },
+            )
+
+            with self.assertRaisesRegex(ValueError, "value-only"):
+                RLSolver(env, checkpoint=str(value_path))
+            solver = RLSolver(
+                env,
+                checkpoint=str(policy_path),
+                value_checkpoint=str(value_path),
+                value_rerank_top_k=2,
+            )
+
+        policy_weight = next(solver.model.aircraft_encoder.parameters())
+        value_weight = next(
+            solver.value_model.aircraft_encoder.parameters()
+        )
+        self.assertFalse(torch.equal(policy_weight, value_weight))
 
     def test_calibration_metadata_checks_load_range(self) -> None:
         reward_config = PPOConfig()

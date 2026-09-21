@@ -238,6 +238,7 @@ def main() -> None:
     parser.add_argument("--event-log-csv", type=str, default="")
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument("--checkpoint", type=str, default="")
+    parser.add_argument("--value-checkpoint", type=str, default="")
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-stochastic", action="store_true")
     parser.add_argument("--rl-hidden-dim", type=int, default=128)
@@ -277,6 +278,7 @@ def main() -> None:
     elif args.solver in ("rl", "rl_beam"):
         solver_options = {
             "checkpoint": args.checkpoint,
+            "value_checkpoint": args.value_checkpoint,
             "device": args.rl_device,
             "deterministic": not args.rl_stochastic,
             "hidden_dim": args.rl_hidden_dim,

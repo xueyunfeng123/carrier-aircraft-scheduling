@@ -484,8 +484,8 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
 
 ### `rl/value-calibration`
 
-- Fits only the retained multi-load checkpoint's linear value head on complete
-  deterministic trajectories; actor and shared encoders remain frozen.
+- Fits either only the value head or an independent value-only copy of the
+  shared encoders plus value head; policy/action modules remain frozen.
 - Uses seeds `42001-42010` for fitting, `41001-41005` for model selection, and
   untouched seeds `43001-43005` for final evaluation across 47.5, 52.5, 57.5,
   62.5, and 67.5-minute wave intervals.

@@ -8,7 +8,7 @@ import random
 import statistics
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Hashable, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch.nn import functional as F
@@ -366,6 +366,8 @@ def collect_counterfactual_value_samples(
     ):
         if int(value) < 1:
             raise ValueError(f"{name} must be positive")
+    if int(top_k) < 2:
+        raise ValueError("top_k must be at least 2 for ambiguous decisions")
     normalized_seeds = validate_development_seeds(
         seeds,
         "counterfactual",
@@ -437,16 +439,21 @@ def _collect_counterfactual_trajectory(
         config=reward_config,
         device=device,
     )
-    samples: List[ValueSample] = []
+    reservoir: List[List[tuple]] = []
+    reservoir_rng = random.Random(
+        _counterfactual_branch_seed(
+            branch_seed,
+            seed,
+            config_index,
+            -1,
+        )
+    )
     decision_index = 0
-    sampled_states = 0
+    ambiguous_index = 0
+    eligible_states = 0
     steps = 0
 
-    while (
-        not env.done
-        and sampled_states < max_branch_states
-        and steps < max_steps
-    ):
+    while not env.done and steps < max_steps:
         encoded = encode_observation(env)
         if not any(encoded.high_mask):
             _, _, done, info = env.step(None)
@@ -459,48 +466,45 @@ def _collect_counterfactual_trajectory(
                 break
             continue
 
-        if decision_index % stride == 0:
-            candidates = trainer.rank_actions(
+        candidates = _distinct_ranked_actions(
+            trainer.rank_actions(
                 encoded,
                 env,
                 top_k=top_k,
             )
-            shared_seed = _counterfactual_branch_seed(
-                branch_seed,
-                seed,
-                config_index,
-                decision_index,
-            )
-            prepared = [
-                (
-                    trainer,
-                    clone_environment_for_counterfactual(
-                        env,
-                        shared_seed,
-                    ),
-                    action,
-                    rank,
+        )
+        if len(candidates) >= 2:
+            if ambiguous_index % stride == 0:
+                shared_seed = _counterfactual_branch_seed(
+                    branch_seed,
                     seed,
+                    config_index,
                     decision_index,
-                    shared_seed,
-                    max_steps,
                 )
-                for rank, (action, _) in enumerate(candidates)
-            ]
-            if executor is None:
-                branch_samples = [
-                    _rollout_counterfactual_candidate(*arguments)
-                    for arguments in prepared
-                ]
-            else:
-                branch_samples = list(
-                    executor.map(
-                        _rollout_counterfactual_candidate_from_tuple,
-                        prepared,
+                prepared = [
+                    (
+                        trainer,
+                        clone_environment_for_counterfactual(
+                            env,
+                            shared_seed,
+                        ),
+                        action,
+                        rank,
+                        seed,
+                        decision_index,
+                        shared_seed,
+                        max_steps,
                     )
-                )
-            samples.extend(branch_samples)
-            sampled_states += 1
+                    for rank, (action, _) in enumerate(candidates)
+                ]
+                eligible_states += 1
+                if len(reservoir) < max_branch_states:
+                    reservoir.append(prepared)
+                else:
+                    replacement = reservoir_rng.randrange(eligible_states)
+                    if replacement < max_branch_states:
+                        reservoir[replacement] = prepared
+            ambiguous_index += 1
 
         action, _, _ = trainer.select_action(
             encoded,
@@ -513,15 +517,46 @@ def _collect_counterfactual_trajectory(
         decision_index += 1
         steps += 1
 
-    if (
-        not env.done
-        and sampled_states < max_branch_states
-        and steps >= max_steps
-    ):
+    if not env.done:
         raise RuntimeError(
             f"base actor trajectory exceeded {max_steps} steps for seed {seed}"
         )
+    reservoir.sort(key=lambda prepared: prepared[0][5])
+    samples: List[ValueSample] = []
+    for prepared in reservoir:
+        if executor is None:
+            branch_samples = [
+                _rollout_counterfactual_candidate(*arguments)
+                for arguments in prepared
+            ]
+        else:
+            branch_samples = list(
+                executor.map(
+                    _rollout_counterfactual_candidate_from_tuple,
+                    prepared,
+                )
+            )
+        samples.extend(branch_samples)
     return samples
+
+
+def _distinct_ranked_actions(
+    candidates: Sequence[tuple[Dict[str, Any], float]],
+) -> List[tuple[Dict[str, Any], float]]:
+    """Keep the actor order while removing duplicate complete actions."""
+
+    distinct = []
+    seen = set()
+    for action, score in candidates:
+        key = (
+            int(action["high_level"]),
+            int(action["aircraft_id"]),
+            int(action["target_slot"]),
+        )
+        if key not in seen:
+            seen.add(key)
+            distinct.append((action, score))
+    return distinct
 
 
 def _rollout_counterfactual_candidate_from_tuple(arguments) -> ValueSample:
@@ -650,6 +685,51 @@ def predict_values(
     return predictions
 
 
+def counterfactual_group_key(sample: ValueSample) -> Optional[tuple]:
+    """Return the CRN comparison group for a counterfactual sample."""
+
+    if sample.source_decision_index < 0 or sample.branch_seed is None:
+        return None
+    return (
+        int(sample.seed),
+        float(sample.wave_interval),
+        int(sample.source_decision_index),
+        int(sample.branch_seed),
+    )
+
+
+def pairwise_ranking_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    group_ids: Sequence[Hashable],
+) -> torch.Tensor:
+    """Pairwise logistic loss for unequal targets within each branch group."""
+
+    if predictions.ndim != 1 or targets.ndim != 1:
+        raise ValueError("predictions and targets must be one-dimensional")
+    if len(predictions) != len(targets) or len(predictions) != len(group_ids):
+        raise ValueError(
+            "predictions, targets, and group_ids must have equal lengths"
+        )
+
+    grouped: Dict[Hashable, List[int]] = {}
+    for index, group_id in enumerate(group_ids):
+        grouped.setdefault(group_id, []).append(index)
+    losses = []
+    for indices in grouped.values():
+        for left_position, left in enumerate(indices):
+            for right in indices[left_position + 1 :]:
+                target_delta = targets[left] - targets[right]
+                if float(target_delta.detach().item()) == 0.0:
+                    continue
+                direction = target_delta.sign()
+                prediction_delta = predictions[left] - predictions[right]
+                losses.append(F.softplus(-direction * prediction_delta))
+    if not losses:
+        return predictions.sum() * 0.0
+    return torch.stack(losses).mean()
+
+
 def calibrate_value_head(
     model,
     samples: Sequence[ValueSample],
@@ -658,9 +738,11 @@ def calibrate_value_head(
     epochs: int = 100,
     minibatch_size: int = 512,
     loss_name: str = "huber",
+    ranking_loss_coef: float = 1.0,
+    parameter_scope: str = "value_head",
     seed: int = 0,
 ) -> Dict[str, float]:
-    """Fit only value_head and verify that actor parameters stay unchanged."""
+    """Fit value parameters and verify that frozen parameters stay unchanged."""
 
     if not samples:
         raise ValueError("at least one value sample is required")
@@ -670,16 +752,34 @@ def calibrate_value_head(
         raise ValueError("minibatch_size must be positive")
     if loss_name not in ("huber", "mse"):
         raise ValueError("loss_name must be 'huber' or 'mse'")
+    if ranking_loss_coef < 0.0:
+        raise ValueError("ranking_loss_coef must be non-negative")
+    trainable_prefixes = {
+        "value_head": ("value_head.",),
+        "encoder": (
+            "aircraft_encoder.",
+            "target_encoder.",
+            "global_encoder.",
+            "value_head.",
+        ),
+    }
+    if parameter_scope not in trainable_prefixes:
+        raise ValueError(
+            "parameter_scope must be 'value_head' or 'encoder'"
+        )
+    selected_prefixes = trainable_prefixes[parameter_scope]
 
-    actor_before = {
+    frozen_before = {
         name: tensor.detach().cpu().clone()
         for name, tensor in model.state_dict().items()
-        if not name.startswith("value_head.")
+        if not name.startswith(selected_prefixes)
     }
-    for parameter in model.parameters():
-        parameter.requires_grad_(False)
-    for parameter in model.value_head.parameters():
-        parameter.requires_grad_(True)
+    trainable_parameters = []
+    for name, parameter in model.named_parameters():
+        trainable = name.startswith(selected_prefixes)
+        parameter.requires_grad_(trainable)
+        if trainable:
+            trainable_parameters.append(parameter)
 
     batch = batch_to_torch(
         [sample.observation for sample in samples],
@@ -690,8 +790,12 @@ def calibrate_value_head(
         dtype=torch.float32,
         device=device,
     )
+    group_ids = [
+        counterfactual_group_key(sample) or ("sample", index)
+        for index, sample in enumerate(samples)
+    ]
     optimizer = torch.optim.Adam(
-        model.value_head.parameters(),
+        trainable_parameters,
         lr=learning_rate,
     )
     generator = torch.Generator(device="cpu")
@@ -709,13 +813,14 @@ def calibrate_value_head(
 
     model.train()
     last_loss = 0.0
+    last_regression_loss = 0.0
+    last_ranking_loss = 0.0
     for _ in range(epochs):
-        order = torch.randperm(
-            len(samples),
-            generator=generator,
-        ).tolist()
-        for start in range(0, len(order), minibatch_size):
-            indices = order[start : start + minibatch_size]
+        for indices in _grouped_minibatches(
+            group_ids,
+            minibatch_size,
+            generator,
+        ):
             mb = torch.tensor(
                 indices,
                 dtype=torch.long,
@@ -728,24 +833,35 @@ def calibrate_value_head(
                 batch["low_aux"][mb],
             )
             if loss_name == "huber":
-                loss = F.smooth_l1_loss(values, targets[mb])
+                regression_loss = F.smooth_l1_loss(
+                    values,
+                    targets[mb],
+                )
             else:
-                loss = F.mse_loss(values, targets[mb])
+                regression_loss = F.mse_loss(values, targets[mb])
+            ranking_loss = pairwise_ranking_loss(
+                values,
+                targets[mb],
+                [group_ids[index] for index in indices],
+            )
+            loss = regression_loss + ranking_loss_coef * ranking_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             last_loss = float(loss.item())
+            last_regression_loss = float(regression_loss.item())
+            last_ranking_loss = float(ranking_loss.item())
 
-    actor_after = model.state_dict()
-    changed_actor_parameters = [
+    model_after = model.state_dict()
+    changed_frozen_parameters = [
         name
-        for name, before in actor_before.items()
-        if not torch.equal(before, actor_after[name].detach().cpu())
+        for name, before in frozen_before.items()
+        if not torch.equal(before, model_after[name].detach().cpu())
     ]
-    if changed_actor_parameters:
+    if changed_frozen_parameters:
         raise RuntimeError(
-            "critic calibration changed actor parameters: "
-            + ", ".join(changed_actor_parameters)
+            "critic calibration changed frozen parameters: "
+            + ", ".join(changed_frozen_parameters)
         )
     model.eval()
     final_predictions = predict_values(
@@ -763,7 +879,37 @@ def calibrate_value_head(
         "initial_mse": initial_loss,
         "final_mse": final_loss,
         "last_batch_loss": last_loss,
+        "last_regression_loss": last_regression_loss,
+        "last_ranking_loss": last_ranking_loss,
     }
+
+
+def _grouped_minibatches(
+    group_ids: Sequence[Hashable],
+    minibatch_size: int,
+    generator: torch.Generator,
+) -> List[List[int]]:
+    """Shuffle groups while keeping all alternatives from a branch together."""
+
+    grouped: Dict[Hashable, List[int]] = {}
+    for index, group_id in enumerate(group_ids):
+        grouped.setdefault(group_id, []).append(index)
+    groups = list(grouped.values())
+    order = torch.randperm(
+        len(groups),
+        generator=generator,
+    ).tolist()
+    minibatches: List[List[int]] = []
+    current: List[int] = []
+    for group_index in order:
+        group = groups[group_index]
+        if current and len(current) + len(group) > minibatch_size:
+            minibatches.append(current)
+            current = []
+        current.extend(group)
+    if current:
+        minibatches.append(current)
+    return minibatches
 
 
 def calibration_metric_rows(

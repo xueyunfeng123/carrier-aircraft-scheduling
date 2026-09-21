@@ -20,6 +20,7 @@ from scripts.solve import build_config, run_episode
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default="checkpoints/rl_policy.pt")
+    parser.add_argument("--value-checkpoint", type=str, default="")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--low-rank-prior", type=float)
@@ -83,6 +84,7 @@ def main() -> None:
             max_steps=args.max_steps,
             solver_options={
                 "checkpoint": args.checkpoint,
+                "value_checkpoint": args.value_checkpoint,
                 "device": args.device,
                 "deterministic": not args.stochastic,
                 "low_rank_prior": args.low_rank_prior,

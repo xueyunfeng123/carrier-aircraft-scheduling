@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import statistics
 import time
+from pathlib import Path
 from typing import Any, Dict, Sequence
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
@@ -87,11 +88,29 @@ def main() -> None:
         payload,
         max(args.wave_intervals),
     )
+    value_only_checkpoint = bool(
+        payload.get("extra", {}).get("value_only_checkpoint")
+        or metadata.get("value_only_checkpoint")
+    )
+    actor_checkpoint = (
+        str(metadata.get("source_checkpoint", ""))
+        if value_only_checkpoint
+        else args.checkpoint
+    )
+    if not actor_checkpoint or not Path(actor_checkpoint).is_file():
+        raise ValueError(
+            "value-only checkpoint requires an existing source policy "
+            f"checkpoint: {actor_checkpoint!r}"
+        )
     solver = RLSolver(
         CarrierAircraftSchedulingEnv(configs[0]),
-        checkpoint=args.checkpoint,
+        checkpoint=actor_checkpoint,
+        value_checkpoint=(
+            args.checkpoint if value_only_checkpoint else ""
+        ),
         device=args.device,
     )
+    value_model = solver.value_model
     reward_config = ppo_config_from_checkpoint(payload)
     collection = metadata.get("collection", {})
     if collection.get("method") == "counterfactual_successor":
@@ -140,7 +159,7 @@ def main() -> None:
             max_steps=args.max_steps,
         )
     predictions = predict_values(
-        solver.model,
+        value_model,
         samples,
         args.device,
         args.batch_size,
@@ -164,13 +183,16 @@ def main() -> None:
 
     if args.rerank_top_k > 1:
         benefit_rows = evaluate_rerank_benefit(
-            args.checkpoint,
+            actor_checkpoint,
             configs,
             args.seeds,
             args.device,
             args.rerank_top_k,
             args.rerank_seed,
             args.max_steps,
+            value_checkpoint=(
+                args.checkpoint if value_only_checkpoint else ""
+            ),
         )
         write_rows(args.benefit_output, benefit_rows)
         actor_scores = [
@@ -266,6 +288,7 @@ def evaluate_rerank_benefit(
     top_k: int,
     rerank_seed: int,
     max_steps: int,
+    value_checkpoint: str = "",
 ) -> list[Dict[str, Any]]:
     rows = []
     for config in configs:
@@ -292,6 +315,7 @@ def evaluate_rerank_benefit(
                 max_steps,
                 solver_options={
                     **common_options,
+                    "value_checkpoint": value_checkpoint,
                     "value_rerank_top_k": top_k,
                     "value_rerank_seed": (
                         int(rerank_seed)

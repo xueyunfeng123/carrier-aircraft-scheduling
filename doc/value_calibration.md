@@ -32,9 +32,12 @@ Seeds `70001-70050` are reserved and rejected by the command-line validation.
 The held-out development set is not used to fit the value head or select its
 hyperparameters.
 
-Collection follows the deterministic base actor and samples decision states at
-a configurable stride. At each sampled state it enumerates the actor's top-K
-complete legal `(operation, aircraft, target)` actions. Every candidate is
+Collection follows the deterministic base actor through the complete horizon.
+A decision is eligible only when the actor's top-K contains at least two
+distinct complete legal `(operation, aircraft, target)` actions. Stride is
+counted over these ambiguous decisions, not over all decisions. A deterministic
+reservoir then retains at most `max_branch_states` eligible states from the
+whole trajectory, avoiding early-horizon bias. Every retained candidate is
 applied to its own deep clone. The live environment RNG is replaced during the
 clone operation, so neither its state nor its future draws are exposed.
 Candidates from one branch state receive separately instantiated RNGs with the
@@ -49,19 +52,30 @@ terminal completed sorties - sorties already completed at the successor
 ```
 
 This is a direct, undiscounted Monte Carlo remaining-sortie target. The
-aircraft encoder, target encoder, global encoder, and all actor heads remain
-frozen; only `value_head` is optimized and all non-value tensors are checked
-for exact equality after fitting.
+regression objective is Huber (or MSE) plus a group-aware pairwise logistic
+ranking loss. Pairs are formed only within the same
+`(seed, wave_interval, source_decision_index, branch_seed)` group and only when
+their remaining-sortie targets differ.
+
+`parameter_scope=value_head` fits only `value_head`.
+`parameter_scope=encoder` fits the aircraft, target, and global encoders
+together with `value_head`. In encoder mode every policy/action module is
+frozen and checked for exact tensor equality. Because changing shared encoders
+would still change actor behavior, encoder mode writes a checkpoint marked
+`value_only_checkpoint`; inference loads it separately from the unchanged
+source policy checkpoint.
 
 The collection controls are:
 
 | Option | Meaning |
 |---|---|
-| `--stride` | Sample every Nth base-actor decision |
-| `--max-branch-states` | Maximum sampled states per `(interval, seed)` trajectory |
+| `--stride` | Admit every Nth ambiguous base-actor decision to the reservoir |
+| `--max-branch-states` | Reservoir capacity per `(interval, seed)` trajectory |
 | `--top-k` | Complete legal actor actions evaluated per sampled state |
 | `--workers` | Concurrent independent candidate rollouts |
 | `--branch-seed` | Root seed used to derive per-state CRN streams |
+| `--ranking-loss-coef` | Pairwise ranking loss coefficient |
+| `--parameter-scope` | `value_head` or independent `encoder` critic |
 
 Calibration reports MAE, RMSE, bias, Pearson correlation, and Spearman
 correlation overall and by wave interval and horizon third. The calibrated
@@ -110,7 +124,21 @@ python -m scripts.calibrate_value \
   --max-branch-states 1 \
   --top-k 2 \
   --workers 1 \
-  --epochs 1
+  --epochs 1 \
+  --ranking-loss-coef 1.0 \
+  --parameter-scope encoder
+```
+
+For direct rerank inference with an encoder-trained critic, keep policy and
+value checkpoints separate:
+
+```bash
+python -m scripts.evaluate_rl \
+  --checkpoint checkpoints/rl_multiload_bc.pt \
+  --value-checkpoint checkpoints/rl_multiload_value_calibrated.pt \
+  --value-rerank-top-k 3 \
+  --seed 43001 \
+  --runs 5
 ```
 
 All calibration, selection, and ordinary evaluation lists must be non-empty,
