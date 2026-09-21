@@ -38,6 +38,9 @@ class RLSolver:
         value_rerank_top_k: int = 1,
         value_rerank_seed: int = 0,
         require_calibrated_value: bool = False,
+        value_rerank_include_heuristic: bool = False,
+        value_rerank_include_cp_sat: bool = False,
+        value_rerank_cp_sat_time: float = 0.05,
     ):
         try:
             import torch
@@ -61,8 +64,21 @@ class RLSolver:
         self.value_rerank_top_k = int(value_rerank_top_k)
         self.value_rerank_seed = int(value_rerank_seed)
         self.value_rerank_decisions = 0
+        self.value_rerank_include_heuristic = bool(
+            value_rerank_include_heuristic
+        )
+        self.value_rerank_include_cp_sat = bool(
+            value_rerank_include_cp_sat
+        )
+        self.value_rerank_enabled = (
+            self.value_rerank_top_k > 1
+            or self.value_rerank_include_heuristic
+            or self.value_rerank_include_cp_sat
+        )
         if self.value_rerank_top_k < 1:
             raise ValueError("value_rerank_top_k must be positive")
+        if value_rerank_cp_sat_time <= 0.0:
+            raise ValueError("value_rerank_cp_sat_time must be positive")
 
         model_config = {
             "aircraft_feature_dim": AIRCRAFT_FEATURE_DIM,
@@ -127,7 +143,7 @@ class RLSolver:
         self._step_with_calibration_reward = (
             step_with_calibration_reward
         )
-        if self.value_rerank_top_k > 1 or require_calibrated_value:
+        if self.value_rerank_enabled or require_calibrated_value:
             if checkpoint_payload is None:
                 raise ValueError(
                     "calibrated value inference requires an existing checkpoint"
@@ -136,12 +152,28 @@ class RLSolver:
                 checkpoint_payload,
                 float(self.env.config["wave_interval"]),
             )
+        self._proposal_solvers = []
+        if self.value_rerank_include_heuristic:
+            from solution.heuristic_solver import WaveHeuristicSolver
+
+            self._proposal_solvers.append(
+                WaveHeuristicSolver(self.env)
+            )
+        if self.value_rerank_include_cp_sat:
+            from solution.cp_sat_solver import CPSATSolver
+
+            self._proposal_solvers.append(
+                CPSATSolver(
+                    self.env,
+                    max_time_seconds=float(value_rerank_cp_sat_time),
+                )
+            )
 
     def choose_action(self) -> Optional[Dict[str, Any]]:
         encoded = encode_observation(self.env)
         if not any(encoded.high_mask):
             return None
-        if self.value_rerank_top_k == 1:
+        if not self.value_rerank_enabled:
             action, _, _ = self.trainer.select_action(
                 encoded,
                 self.env,
@@ -340,6 +372,19 @@ class RLSolver:
             self.env,
             self.value_rerank_top_k,
         )
+        candidate_keys = {
+            self._action_key(action)
+            for action, _ in candidates
+        }
+        for proposal_solver in getattr(self, "_proposal_solvers", ()):
+            proposal = proposal_solver.choose_action()
+            if proposal is None:
+                continue
+            key = self._action_key(proposal)
+            if key in candidate_keys:
+                continue
+            candidates.append((proposal, float("-inf")))
+            candidate_keys.add(key)
         scenario_seed = (
             self.value_rerank_seed
             + self.value_rerank_decisions
@@ -357,6 +402,14 @@ class RLSolver:
         ]
         self.value_rerank_decisions += 1
         return max(scored, key=lambda item: (item[0], item[1]))[2]
+
+    @staticmethod
+    def _action_key(action: Dict[str, Any]) -> Tuple[int, int, int]:
+        return (
+            int(action["high_level"]),
+            int(action["aircraft_id"]),
+            int(action["target_slot"]),
+        )
 
     def _one_step_value(
         self,

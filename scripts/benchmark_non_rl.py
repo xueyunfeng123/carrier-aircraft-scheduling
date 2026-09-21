@@ -65,6 +65,19 @@ def main() -> None:
     parser.add_argument("--beam-risk-alpha", type=float, default=0.25)
     parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
     parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
+    parser.add_argument(
+        "--rl-value-rerank-include-heuristic",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--rl-value-rerank-include-cp-sat",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--rl-value-rerank-cp-sat-time",
+        type=float,
+        default=0.05,
+    )
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -132,6 +145,15 @@ def main() -> None:
                     ),
                     "value_rerank_seed": (
                         args.rl_value_rerank_seed
+                    ),
+                    "value_rerank_include_heuristic": (
+                        args.rl_value_rerank_include_heuristic
+                    ),
+                    "value_rerank_include_cp_sat": (
+                        args.rl_value_rerank_include_cp_sat
+                    ),
+                    "value_rerank_cp_sat_time": (
+                        args.rl_value_rerank_cp_sat_time
                     ),
                 }
             elif solver_name == "rl_beam":

@@ -33,6 +33,19 @@ def main() -> None:
         help="rerank the actor's top K complete actions with one-step value estimates",
     )
     parser.add_argument("--value-rerank-seed", type=int, default=0)
+    parser.add_argument(
+        "--value-rerank-include-heuristic",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--value-rerank-include-cp-sat",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--value-rerank-cp-sat-time",
+        type=float,
+        default=0.05,
+    )
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -78,6 +91,15 @@ def main() -> None:
                 "disable_low_rank_prior": args.disable_low_rank_prior,
                 "value_rerank_top_k": args.value_rerank_top_k,
                 "value_rerank_seed": args.value_rerank_seed,
+                "value_rerank_include_heuristic": (
+                    args.value_rerank_include_heuristic
+                ),
+                "value_rerank_include_cp_sat": (
+                    args.value_rerank_include_cp_sat
+                ),
+                "value_rerank_cp_sat_time": (
+                    args.value_rerank_cp_sat_time
+                ),
             },
         )
         for run_id in range(args.runs)
