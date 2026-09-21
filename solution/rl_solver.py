@@ -43,6 +43,7 @@ class RLSolver:
         value_rerank_include_cp_sat: bool = False,
         value_rerank_cp_sat_time: float = 0.05,
         value_rerank_min_advantage: float = 0.0,
+        value_rerank_samples: int = 1,
     ):
         try:
             import torch
@@ -88,6 +89,9 @@ class RLSolver:
             raise ValueError(
                 "value_rerank_min_advantage must be non-negative"
             )
+        self.value_rerank_samples = int(value_rerank_samples)
+        if self.value_rerank_samples < 1:
+            raise ValueError("value_rerank_samples must be positive")
 
         model_config = {
             "aircraft_feature_dim": AIRCRAFT_FEATURE_DIM,
@@ -403,20 +407,27 @@ class RLSolver:
             self.value_rerank_seed
             + self.value_rerank_decisions
         )
-        scored = [
+        sample_count = getattr(self, "value_rerank_samples", 1)
+        averaged = [
             (
-                self._one_step_value(
-                    action,
-                    scenario_seed,
-                ),
+                sum(
+                    self._one_step_value(
+                        action,
+                        scenario_seed + sample_index * 10_007,
+                    )
+                    for sample_index in range(
+                        sample_count
+                    )
+                )
+                / float(sample_count),
                 -rank,
                 action,
             )
             for rank, (action, _) in enumerate(candidates)
         ]
         self.value_rerank_decisions += 1
-        best = max(scored, key=lambda item: (item[0], item[1]))
-        actor_first = scored[0]
+        best = max(averaged, key=lambda item: (item[0], item[1]))
+        actor_first = averaged[0]
         if (
             best[2] is not actor_first[2]
             and best[0] - actor_first[0]

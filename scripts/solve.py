@@ -271,6 +271,7 @@ def main() -> None:
         type=float,
         default=0.0,
     )
+    parser.add_argument("--rl-value-rerank-samples", type=int, default=1)
     args = parser.parse_args()
 
     config = build_config(args)
@@ -300,6 +301,7 @@ def main() -> None:
             "value_rerank_min_advantage": (
                 args.rl_value_rerank_min_advantage
             ),
+            "value_rerank_samples": args.rl_value_rerank_samples,
         }
         if args.solver == "rl_beam":
             solver_options.update(

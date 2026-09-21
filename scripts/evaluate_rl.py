@@ -51,6 +51,7 @@ def main() -> None:
         type=float,
         default=0.0,
     )
+    parser.add_argument("--value-rerank-samples", type=int, default=1)
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -108,6 +109,7 @@ def main() -> None:
                 "value_rerank_min_advantage": (
                     args.value_rerank_min_advantage
                 ),
+                "value_rerank_samples": args.value_rerank_samples,
             },
         )
         for run_id in range(args.runs)
