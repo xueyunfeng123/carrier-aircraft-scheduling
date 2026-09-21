@@ -15,6 +15,7 @@ from rl.obs_encoder import (
     TARGET_AUX_FEATURE_DIM,
     TARGET_FEATURE_DIM,
     encode_observation,
+    target_slot_for_action,
     to_torch_batch,
 )
 
@@ -380,6 +381,11 @@ class RLSolver:
             proposal = proposal_solver.choose_action()
             if proposal is None:
                 continue
+            proposal = dict(proposal)
+            proposal["target_slot"] = target_slot_for_action(
+                encoded,
+                proposal,
+            )
             key = self._action_key(proposal)
             if key in candidate_keys:
                 continue
