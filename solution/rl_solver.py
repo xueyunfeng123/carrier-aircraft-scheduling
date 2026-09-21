@@ -44,6 +44,7 @@ class RLSolver:
         value_rerank_cp_sat_time: float = 0.05,
         value_rerank_min_advantage: float = 0.0,
         value_rerank_samples: int = 1,
+        value_checkpoint: str = "",
     ):
         try:
             import torch
@@ -135,10 +136,53 @@ class RLSolver:
         )
         self.model.eval()
 
+        value_checkpoint_payload = checkpoint_payload
+        self.value_model = self.model
+        if value_checkpoint:
+            value_checkpoint_payload = load_checkpoint(
+                value_checkpoint,
+                device=device,
+            )
+            value_schema = value_checkpoint_payload.get(
+                "extra",
+                {},
+            ).get("observation_schema_version", 1)
+            if value_schema != OBSERVATION_SCHEMA_VERSION:
+                raise ValueError(
+                    "value checkpoint observation schema is incompatible"
+                )
+            value_model_config = {
+                "aircraft_feature_dim": AIRCRAFT_FEATURE_DIM,
+                "global_feature_dim": GLOBAL_FEATURE_DIM,
+                "hidden_dim": hidden_dim,
+                "aircraft_embed_dim": aircraft_embed_dim,
+                "target_feature_dim": (
+                    TARGET_FEATURE_DIM + TARGET_AUX_FEATURE_DIM
+                ),
+                "target_embed_dim": target_embed_dim,
+            }
+            stored_value_config = value_checkpoint_payload.get(
+                "model_config",
+                {},
+            )
+            value_model_config.update(stored_value_config)
+            if "action_conditioned_low_head" not in stored_value_config:
+                value_model_config["action_conditioned_low_head"] = False
+            self.value_model = CarrierPolicyValueNet(
+                **value_model_config
+            ).to(device)
+            self.value_model.load_state_dict(
+                value_checkpoint_payload["model_state"]
+            )
+            self.value_model.eval()
+
         # Reuse action selection code without an optimizer during inference.
         ppo_config_values = (
-            checkpoint_payload.get("extra", {}).get("ppo_config", {})
-            if checkpoint_payload is not None
+            value_checkpoint_payload.get("extra", {}).get(
+                "ppo_config",
+                {},
+            )
+            if value_checkpoint_payload is not None
             else {}
         )
         compatible_ppo_config = {
@@ -157,12 +201,12 @@ class RLSolver:
             step_with_calibration_reward
         )
         if self.value_rerank_enabled or require_calibrated_value:
-            if checkpoint_payload is None:
+            if value_checkpoint_payload is None:
                 raise ValueError(
                     "calibrated value inference requires an existing checkpoint"
                 )
             validate_rerank_calibration(
-                checkpoint_payload,
+                value_checkpoint_payload,
                 float(self.env.config["wave_interval"]),
             )
         self._proposal_solvers = []
@@ -371,7 +415,7 @@ class RLSolver:
         encoded = encode_observation(target_env)
         batch = to_torch_batch(encoded, self.device)
         with self.torch.no_grad():
-            _, _, remaining_value = self.model(
+            _, _, remaining_value = self.value_model(
                 batch["aircraft"],
                 batch["global"],
                 batch["targets"],
@@ -477,7 +521,7 @@ class RLSolver:
         next_encoded = encode_observation(candidate_env)
         encoded_batch = to_torch_batch(next_encoded, self.device)
         with self.torch.no_grad():
-            _, _, next_value = self.model(
+            _, _, next_value = self.value_model(
                 encoded_batch["aircraft"],
                 encoded_batch["global"],
                 encoded_batch["targets"],

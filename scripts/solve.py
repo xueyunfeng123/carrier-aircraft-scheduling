@@ -253,6 +253,7 @@ def main() -> None:
     parser.add_argument("--beam-risk-alpha", type=float, default=0.25)
     parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
     parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
+    parser.add_argument("--rl-value-checkpoint", type=str, default="")
     parser.add_argument(
         "--rl-value-rerank-include-heuristic",
         action="store_true",
@@ -289,6 +290,7 @@ def main() -> None:
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
             "value_rerank_top_k": args.rl_value_rerank_top_k,
             "value_rerank_seed": args.rl_value_rerank_seed,
+            "value_checkpoint": args.rl_value_checkpoint,
             "value_rerank_include_heuristic": (
                 args.rl_value_rerank_include_heuristic
             ),

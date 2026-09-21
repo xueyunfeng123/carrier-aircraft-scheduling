@@ -65,6 +65,7 @@ def main() -> None:
     parser.add_argument("--beam-risk-alpha", type=float, default=0.25)
     parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
     parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
+    parser.add_argument("--rl-value-checkpoint", type=str, default="")
     parser.add_argument(
         "--rl-value-rerank-include-heuristic",
         action="store_true",
@@ -104,6 +105,14 @@ def main() -> None:
         if not Path(args.rl_checkpoint).is_file():
             parser.error(f"RL checkpoint does not exist: {args.rl_checkpoint}")
         solver_names += ("rl",)
+    if (
+        args.rl_value_checkpoint
+        and not Path(args.rl_value_checkpoint).is_file()
+    ):
+        parser.error(
+            "RL value checkpoint does not exist: "
+            f"{args.rl_value_checkpoint}"
+        )
     if args.rl_beam_checkpoint:
         if not Path(args.rl_beam_checkpoint).is_file():
             parser.error(
@@ -152,6 +161,7 @@ def main() -> None:
                     "value_rerank_seed": (
                         args.rl_value_rerank_seed
                     ),
+                    "value_checkpoint": args.rl_value_checkpoint,
                     "value_rerank_include_heuristic": (
                         args.rl_value_rerank_include_heuristic
                     ),

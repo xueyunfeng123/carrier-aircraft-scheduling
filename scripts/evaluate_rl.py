@@ -33,6 +33,7 @@ def main() -> None:
         help="rerank the actor's top K complete actions with one-step value estimates",
     )
     parser.add_argument("--value-rerank-seed", type=int, default=0)
+    parser.add_argument("--value-checkpoint", type=str, default="")
     parser.add_argument(
         "--value-rerank-include-heuristic",
         action="store_true",
@@ -97,6 +98,7 @@ def main() -> None:
                 "disable_low_rank_prior": args.disable_low_rank_prior,
                 "value_rerank_top_k": args.value_rerank_top_k,
                 "value_rerank_seed": args.value_rerank_seed,
+                "value_checkpoint": args.value_checkpoint,
                 "value_rerank_include_heuristic": (
                     args.value_rerank_include_heuristic
                 ),
