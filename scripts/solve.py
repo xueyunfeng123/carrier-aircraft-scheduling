@@ -248,6 +248,8 @@ def main() -> None:
     parser.add_argument("--beam-rollout-events", type=int, default=2)
     parser.add_argument("--beam-rollout-samples", type=int, default=1)
     parser.add_argument("--beam-search-seed", type=int, default=17)
+    parser.add_argument("--beam-value-leaf-weight", type=float, default=0.0)
+    parser.add_argument("--beam-risk-weight", type=float, default=0.0)
     parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
     parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
     args = parser.parse_args()
@@ -277,6 +279,10 @@ def main() -> None:
                     "rollout_events": args.beam_rollout_events,
                     "rollout_samples": args.beam_rollout_samples,
                     "search_seed": args.beam_search_seed,
+                    "value_leaf_weight": (
+                        args.beam_value_leaf_weight
+                    ),
+                    "risk_weight": args.beam_risk_weight,
                 }
             )
     results = [

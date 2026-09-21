@@ -26,7 +26,7 @@ class _BeamNode:
     env: CarrierAircraftSchedulingEnv
     first_action: Dict[str, Any]
     policy_log_probability: float
-    score: Tuple[float, float, float, float]
+    score: Tuple[float, ...]
 
 
 class RLBeamSearchSolver:
@@ -51,6 +51,8 @@ class RLBeamSearchSolver:
         rollout_samples: int = 1,
         search_seed: int = 17,
         max_rollout_actions: int = 1000,
+        value_leaf_weight: float = 0.0,
+        risk_weight: float = 0.0,
         policy: Optional[RankedPolicy] = None,
         **rl_options: Any,
     ):
@@ -64,6 +66,10 @@ class RLBeamSearchSolver:
         ):
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if value_leaf_weight < 0.0:
+            raise ValueError("value_leaf_weight must be non-negative")
+        if not 0.0 <= risk_weight <= 1.0:
+            raise ValueError("risk_weight must be in [0, 1]")
 
         self.env = env
         self.beam_width = int(beam_width)
@@ -73,13 +79,22 @@ class RLBeamSearchSolver:
         self.rollout_samples = int(rollout_samples)
         self.search_seed = int(search_seed)
         self.max_rollout_actions = int(max_rollout_actions)
+        self.value_leaf_weight = float(value_leaf_weight)
+        self.risk_weight = float(risk_weight)
         self.policy = policy or RLSolver(
             env,
             checkpoint=checkpoint,
             device=device,
             deterministic=deterministic,
+            require_calibrated_value=self.value_leaf_weight > 0.0,
             **rl_options,
         )
+        if self.value_leaf_weight > 0.0 and not callable(
+            getattr(self.policy, "estimate_terminal_sorties", None)
+        ):
+            raise ValueError(
+                "value-guided search requires a calibrated value policy"
+            )
         self.decision_index = 0
 
     def choose_action(self) -> Optional[Dict[str, Any]]:
@@ -168,8 +183,9 @@ class RLBeamSearchSolver:
         env: CarrierAircraftSchedulingEnv,
         policy_log_probability: float,
         depth: int,
-    ) -> Tuple[float, float, float, float]:
+    ) -> Tuple[float, ...]:
         scores = []
+        terminal_estimates = []
         for sample_index in range(self.rollout_samples):
             rollout_env = copy.deepcopy(env)
             rollout_env.rng = random.Random(
@@ -181,15 +197,32 @@ class RLBeamSearchSolver:
             )
             self._greedy_rollout(rollout_env)
             metrics = rollout_env.get_evaluation_metrics()
+            completed = float(metrics["total_sorties_completed"])
             scores.append(
                 (
-                    float(metrics["total_sorties_completed"]),
+                    completed,
                     readiness_potential(rollout_env),
                     -float(metrics["total_missed_sorties"]),
                 )
             )
+            terminal_estimate = completed
+            if self.value_leaf_weight > 0.0:
+                terminal_estimate = float(
+                    self.policy.estimate_terminal_sorties(rollout_env)
+                )
+            terminal_estimates.append(
+                completed
+                + self.value_leaf_weight
+                * (terminal_estimate - completed)
+            )
         sample_count = float(len(scores))
+        mean_terminal = sum(terminal_estimates) / sample_count
+        robust_terminal = (
+            (1.0 - self.risk_weight) * mean_terminal
+            + self.risk_weight * min(terminal_estimates)
+        )
         return (
+            robust_terminal,
             sum(score[0] for score in scores) / sample_count,
             sum(score[1] for score in scores) / sample_count,
             sum(score[2] for score in scores) / sample_count,

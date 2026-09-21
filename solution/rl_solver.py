@@ -37,6 +37,7 @@ class RLSolver:
         disable_low_rank_prior: bool = False,
         value_rerank_top_k: int = 1,
         value_rerank_seed: int = 0,
+        require_calibrated_value: bool = False,
     ):
         try:
             import torch
@@ -126,10 +127,10 @@ class RLSolver:
         self._step_with_calibration_reward = (
             step_with_calibration_reward
         )
-        if self.value_rerank_top_k > 1:
+        if self.value_rerank_top_k > 1 or require_calibrated_value:
             if checkpoint_payload is None:
                 raise ValueError(
-                    "value rerank requires an existing checkpoint"
+                    "calibrated value inference requires an existing checkpoint"
                 )
             validate_rerank_calibration(
                 checkpoint_payload,
@@ -306,6 +307,32 @@ class RLSolver:
                 k=count,
             ).indices.tolist()
         ]
+
+    def estimate_terminal_sorties(
+        self,
+        env: Optional[CarrierAircraftSchedulingEnv] = None,
+    ) -> float:
+        """Estimate final completed sorties from an observable search state."""
+
+        target_env = env or self.env
+        completed = float(
+            target_env.get_evaluation_metrics()[
+                "total_sorties_completed"
+            ]
+        )
+        if target_env.done:
+            return completed
+
+        encoded = encode_observation(target_env)
+        batch = to_torch_batch(encoded, self.device)
+        with self.torch.no_grad():
+            _, _, remaining_value = self.model(
+                batch["aircraft"],
+                batch["global"],
+                batch["targets"],
+                batch["low_aux"],
+            )
+        return completed + float(remaining_value.item())
 
     def _choose_value_reranked_action(self, encoded) -> Dict[str, Any]:
         candidates = self.trainer.rank_actions(

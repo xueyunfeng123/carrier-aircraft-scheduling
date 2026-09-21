@@ -69,6 +69,20 @@ class _NonProgressEnvironment(_ToyEnvironment):
         return {}, 0.0, False, {"invalid_action": False}
 
 
+class _ValueEnvironment(_ToyEnvironment):
+    def step(self, action):
+        if action is not None:
+            self.pending_action = action["aircraft_id"]
+        else:
+            self.time += 1.0
+        return {}, 0.0, False, {"invalid_action": False}
+
+
+class _ValuePolicy(_ToyPolicy):
+    def estimate_terminal_sorties(self, env):
+        return 5.0 if env.pending_action == 1 else 0.0
+
+
 class _ForbiddenLiveRandom:
     def __deepcopy__(self, memo):
         raise AssertionError("live RNG state must not be copied")
@@ -133,6 +147,40 @@ class RLBeamSearchTest(unittest.TestCase):
             RLBeamSearchSolver(
                 _ToyEnvironment(),
                 beam_width=0,
+                policy=_ToyPolicy(),
+            )
+
+    def test_calibrated_leaf_value_can_override_policy_rank(self) -> None:
+        solver = RLBeamSearchSolver(
+            _ValueEnvironment(),
+            beam_width=2,
+            expansion_k=2,
+            search_depth=1,
+            rollout_events=1,
+            value_leaf_weight=1.0,
+            policy=_ValuePolicy(),
+        )
+
+        action = solver.choose_action()
+
+        self.assertEqual(action["aircraft_id"], 1)
+
+    def test_value_guidance_requires_value_capable_policy(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "calibrated value policy",
+        ):
+            RLBeamSearchSolver(
+                _ToyEnvironment(),
+                value_leaf_weight=1.0,
+                policy=_ToyPolicy(),
+            )
+
+    def test_risk_weight_must_be_a_probability(self) -> None:
+        with self.assertRaisesRegex(ValueError, "risk_weight"):
+            RLBeamSearchSolver(
+                _ToyEnvironment(),
+                risk_weight=1.1,
                 policy=_ToyPolicy(),
             )
 
