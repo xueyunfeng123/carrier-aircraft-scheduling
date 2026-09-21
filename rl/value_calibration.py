@@ -333,8 +333,9 @@ def calibrate_value_head(
     minibatch_size: int = 512,
     loss_name: str = "huber",
     seed: int = 0,
+    parameter_scope: str = "head",
 ) -> Dict[str, float]:
-    """Fit only value_head and verify that actor parameters stay unchanged."""
+    """Fit the value head, optionally with its shared state encoders."""
 
     if not samples:
         raise ValueError("at least one value sample is required")
@@ -344,16 +345,29 @@ def calibrate_value_head(
         raise ValueError("minibatch_size must be positive")
     if loss_name not in ("huber", "mse"):
         raise ValueError("loss_name must be 'huber' or 'mse'")
+    if parameter_scope not in ("head", "encoder"):
+        raise ValueError("parameter_scope must be 'head' or 'encoder'")
 
-    actor_before = {
+    trainable_prefixes = ("value_head.",)
+    if parameter_scope == "encoder":
+        trainable_prefixes = (
+            "aircraft_encoder.",
+            "target_encoder.",
+            "global_encoder.",
+            "value_head.",
+        )
+    frozen_before = {
         name: tensor.detach().cpu().clone()
         for name, tensor in model.state_dict().items()
-        if not name.startswith("value_head.")
+        if not name.startswith(trainable_prefixes)
     }
     for parameter in model.parameters():
         parameter.requires_grad_(False)
-    for parameter in model.value_head.parameters():
-        parameter.requires_grad_(True)
+    trainable_parameters = []
+    for name, parameter in model.named_parameters():
+        if name.startswith(trainable_prefixes):
+            parameter.requires_grad_(True)
+            trainable_parameters.append(parameter)
 
     batch = batch_to_torch(
         [sample.observation for sample in samples],
@@ -365,7 +379,7 @@ def calibrate_value_head(
         device=device,
     )
     optimizer = torch.optim.Adam(
-        model.value_head.parameters(),
+        trainable_parameters,
         lr=learning_rate,
     )
     generator = torch.Generator(device="cpu")
@@ -410,16 +424,16 @@ def calibrate_value_head(
             optimizer.step()
             last_loss = float(loss.item())
 
-    actor_after = model.state_dict()
-    changed_actor_parameters = [
+    state_after = model.state_dict()
+    changed_frozen_parameters = [
         name
-        for name, before in actor_before.items()
-        if not torch.equal(before, actor_after[name].detach().cpu())
+        for name, before in frozen_before.items()
+        if not torch.equal(before, state_after[name].detach().cpu())
     ]
-    if changed_actor_parameters:
+    if changed_frozen_parameters:
         raise RuntimeError(
-            "critic calibration changed actor parameters: "
-            + ", ".join(changed_actor_parameters)
+            "critic calibration changed frozen parameters: "
+            + ", ".join(changed_frozen_parameters)
         )
     model.eval()
     final_predictions = predict_values(

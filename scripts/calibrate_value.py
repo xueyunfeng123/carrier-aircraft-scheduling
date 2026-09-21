@@ -77,6 +77,11 @@ def main() -> None:
         choices=("huber", "mse"),
         default="huber",
     )
+    parser.add_argument(
+        "--parameter-scope",
+        choices=("head", "encoder"),
+        default="head",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-steps", type=int, default=100_000)
     args = parser.parse_args()
@@ -135,6 +140,7 @@ def main() -> None:
         minibatch_size=args.minibatch_size,
         loss_name=args.loss,
         seed=args.calibration_seeds[0],
+        parameter_scope=args.parameter_scope,
     )
     after_predictions = predict_values(
         model,
@@ -172,6 +178,7 @@ def main() -> None:
             "learning_rate": args.learning_rate,
             "minibatch_size": args.minibatch_size,
             "loss": args.loss,
+            "parameter_scope": args.parameter_scope,
             "fit_stats": fit_stats,
             "selection_metrics_before": _overall_row(
                 rows,
@@ -181,7 +188,8 @@ def main() -> None:
                 rows,
                 "after",
             ),
-            "actor_frozen": True,
+            "actor_frozen": args.parameter_scope == "head",
+            "value_only_checkpoint": args.parameter_scope == "encoder",
         }
     )
     extra["value_calibration"] = metadata
