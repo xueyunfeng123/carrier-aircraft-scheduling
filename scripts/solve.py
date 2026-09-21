@@ -266,6 +266,11 @@ def main() -> None:
         type=float,
         default=0.05,
     )
+    parser.add_argument(
+        "--rl-value-rerank-min-advantage",
+        type=float,
+        default=0.0,
+    )
     args = parser.parse_args()
 
     config = build_config(args)
@@ -291,6 +296,9 @@ def main() -> None:
             ),
             "value_rerank_cp_sat_time": (
                 args.rl_value_rerank_cp_sat_time
+            ),
+            "value_rerank_min_advantage": (
+                args.rl_value_rerank_min_advantage
             ),
         }
         if args.solver == "rl_beam":

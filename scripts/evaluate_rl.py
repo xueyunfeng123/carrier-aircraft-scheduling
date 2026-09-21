@@ -46,6 +46,11 @@ def main() -> None:
         type=float,
         default=0.05,
     )
+    parser.add_argument(
+        "--value-rerank-min-advantage",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--cbs-replan", action="store_true")
     parser.add_argument(
         "--cbs-max-expanded-nodes",
@@ -99,6 +104,9 @@ def main() -> None:
                 ),
                 "value_rerank_cp_sat_time": (
                     args.value_rerank_cp_sat_time
+                ),
+                "value_rerank_min_advantage": (
+                    args.value_rerank_min_advantage
                 ),
             },
         )

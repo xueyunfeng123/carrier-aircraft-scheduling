@@ -42,6 +42,7 @@ class RLSolver:
         value_rerank_include_heuristic: bool = False,
         value_rerank_include_cp_sat: bool = False,
         value_rerank_cp_sat_time: float = 0.05,
+        value_rerank_min_advantage: float = 0.0,
     ):
         try:
             import torch
@@ -80,6 +81,13 @@ class RLSolver:
             raise ValueError("value_rerank_top_k must be positive")
         if value_rerank_cp_sat_time <= 0.0:
             raise ValueError("value_rerank_cp_sat_time must be positive")
+        self.value_rerank_min_advantage = float(
+            value_rerank_min_advantage
+        )
+        if self.value_rerank_min_advantage < 0.0:
+            raise ValueError(
+                "value_rerank_min_advantage must be non-negative"
+            )
 
         model_config = {
             "aircraft_feature_dim": AIRCRAFT_FEATURE_DIM,
@@ -407,7 +415,15 @@ class RLSolver:
             for rank, (action, _) in enumerate(candidates)
         ]
         self.value_rerank_decisions += 1
-        return max(scored, key=lambda item: (item[0], item[1]))[2]
+        best = max(scored, key=lambda item: (item[0], item[1]))
+        actor_first = scored[0]
+        if (
+            best[2] is not actor_first[2]
+            and best[0] - actor_first[0]
+            < getattr(self, "value_rerank_min_advantage", 0.0)
+        ):
+            return actor_first[2]
+        return best[2]
 
     @staticmethod
     def _action_key(action: Dict[str, Any]) -> Tuple[int, int, int]:
