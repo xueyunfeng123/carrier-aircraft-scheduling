@@ -203,10 +203,12 @@ evaluation scenarios.
 | `rl/behavior_cloning.py` | Heuristic demonstration collection and policy pretraining |
 | `rl/ppo_trainer.py` | Masked action selection and PPO updates |
 | `rl/value_calibration.py` | Counterfactual successor MC targets, CRN rollouts, critic-only fitting, calibration metrics, and rerank metadata validation |
+| `rl/action_value.py` | Source-state action MC targets, independent action-conditioned Q network, grouped fitting, and checkpoint validation |
 | `scripts/evaluation_defaults.py` | Fixed training and evaluation seeds, horizon, and run count |
 | `scripts/train_rl.py` | Rollout collection, training, checkpointing, and evaluation |
 | `scripts/evaluate_rl.py` | Checkpoint evaluation |
 | `scripts/calibrate_value.py` | Offline critic calibration with disjoint fitting and selection seeds |
+| `scripts/train_action_value.py` | Offline direct-Q training with disjoint fitting and selection seeds |
 | `scripts/evaluate_value.py` | Held-out critic metrics and paired one-step value-rerank evaluation |
 | `scripts/random_policy_test.py` | Legacy random-policy timing report |
 | `scripts/benchmark_non_rl.py` | Reproducible benchmark for non-RL solvers and an optional RL checkpoint |
@@ -299,6 +301,10 @@ python -m scripts.benchmark_non_rl \
 # Calibrate the retained multi-load critic and evaluate one-step reranking
 PYTHON_BIN=python DEVICE=cuda \
   bash scripts/run_value_calibration_experiment.sh
+
+# Train and evaluate direct action-conditioned Q ranking
+PYTHON_BIN=python DEVICE=cuda \
+  bash scripts/run_action_value_experiment.sh
 
 # Syntax smoke check
 python -m compileall -q env solution rl scripts
@@ -496,6 +502,19 @@ outside `main`. Do not merge or cherry-pick them without an explicit decision.
   environment's future random stream.
 - Reproduction protocol and measured results are in
   `doc/value_calibration.md`.
+
+### `rl/action-value-search`
+
+- Stores the source observation, complete legal actor action, action target
+  context, explicit CRN group ID, and terminal remaining-sortie target.
+- Initializes a separate `ActionValueRanker` from actor representation weights;
+  Q training may update its encoder copy but verifies the actor is unchanged.
+- Loads actor and Q checkpoints separately and validates the source actor hash.
+- Scores actor top-K candidates in one Q batch without environment cloning,
+  stepping, or any other access to future simulator state.
+- Uses fitting seeds `42001-42010`, selection seeds `41001-41005`, and
+  development evaluation seeds `43001-43005`; `70001-70050` are rejected.
+- Reproduction protocol is in `doc/action_value_search.md`.
 
 New constraint experiments must be isolated on their own branch, compared
 against a matched control, and justified by either the supplied requirements or

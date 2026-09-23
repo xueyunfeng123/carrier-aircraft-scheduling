@@ -42,9 +42,17 @@ class RLSolver:
         value_rerank_include_cp_sat: bool = False,
         value_rerank_cp_sat_time: float = 0.05,
         value_checkpoint: str = "",
+        action_value_checkpoint: str = "",
+        action_value_top_k: int = 3,
     ):
         try:
             import torch
+            from rl.action_value import (
+                ActionValueRanker,
+                checkpoint_sha256,
+                predict_action_values_for_actions,
+                validate_action_value_checkpoint,
+            )
             from rl.checkpoint import load_checkpoint
             from rl.model import CarrierPolicyValueNet
             from rl.ppo_trainer import PPOTrainer
@@ -76,8 +84,22 @@ class RLSolver:
             or self.value_rerank_include_heuristic
             or self.value_rerank_include_cp_sat
         )
+        self.action_value_top_k = int(action_value_top_k)
+        self.action_value_enabled = bool(action_value_checkpoint)
         if self.value_rerank_top_k < 1:
             raise ValueError("value_rerank_top_k must be positive")
+        if self.action_value_top_k < 1:
+            raise ValueError("action_value_top_k must be positive")
+        if self.action_value_enabled and self.value_rerank_enabled:
+            raise ValueError(
+                "action-value ranking and successor-value reranking "
+                "cannot be enabled together"
+            )
+        if self.action_value_enabled and value_checkpoint:
+            raise ValueError(
+                "action-value and successor-value checkpoints cannot "
+                "be loaded together"
+            )
         if value_rerank_cp_sat_time <= 0.0:
             raise ValueError("value_rerank_cp_sat_time must be positive")
 
@@ -93,6 +115,13 @@ class RLSolver:
         }
         checkpoint_path = Path(checkpoint) if checkpoint else None
         checkpoint_payload = None
+        if self.action_value_enabled and (
+            checkpoint_path is None
+            or not checkpoint_path.is_file()
+        ):
+            raise ValueError(
+                "action-value inference requires an existing actor checkpoint"
+            )
         if checkpoint_path and checkpoint_path.exists():
             checkpoint_payload = load_checkpoint(str(checkpoint_path), device=device)
             checkpoint_extra = checkpoint_payload.get("extra", {})
@@ -110,6 +139,13 @@ class RLSolver:
                 raise ValueError(
                     "a value-only checkpoint cannot be used as the policy "
                     "checkpoint"
+                )
+            if checkpoint_extra.get("checkpoint_type") == (
+                "action_value_ranker"
+            ):
+                raise ValueError(
+                    "an action-value checkpoint cannot be used as the "
+                    "policy checkpoint"
                 )
             checkpoint_schema = checkpoint_payload.get("extra", {}).get(
                 "observation_schema_version",
@@ -178,6 +214,42 @@ class RLSolver:
                 value_checkpoint_payload["model_state"]
             )
             self.value_model.eval()
+        self.action_value_model = None
+        self._predict_action_values_for_actions = (
+            predict_action_values_for_actions
+        )
+        if self.action_value_enabled:
+            action_value_path = Path(action_value_checkpoint)
+            if not action_value_path.is_file():
+                raise ValueError(
+                    "action-value checkpoint does not exist: "
+                    f"{action_value_checkpoint}"
+                )
+            action_value_payload = load_checkpoint(
+                str(action_value_path),
+                device=device,
+            )
+            action_value_schema = action_value_payload.get(
+                "extra",
+                {},
+            ).get("observation_schema_version", 1)
+            if action_value_schema != OBSERVATION_SCHEMA_VERSION:
+                raise ValueError(
+                    "action-value checkpoint observation schema is "
+                    "incompatible with the current environment"
+                )
+            validate_action_value_checkpoint(
+                action_value_payload,
+                float(self.env.config["wave_interval"]),
+                actor_sha256=checkpoint_sha256(str(checkpoint_path)),
+            )
+            self.action_value_model = ActionValueRanker(
+                **action_value_payload["model_config"]
+            ).to(device)
+            self.action_value_model.load_state_dict(
+                action_value_payload["model_state"]
+            )
+            self.action_value_model.eval()
 
         # Reuse action selection code without an optimizer during inference.
         ppo_config_values = (
@@ -235,7 +307,9 @@ class RLSolver:
         encoded = encode_observation(self.env)
         if not any(encoded.high_mask):
             return None
-        if not self.value_rerank_enabled:
+        if self.action_value_enabled:
+            action = self._choose_action_value_ranked_action(encoded)
+        elif not self.value_rerank_enabled:
             action, _, _ = self.trainer.select_action(
                 encoded,
                 self.env,
@@ -427,6 +501,30 @@ class RLSolver:
                 batch["low_aux"],
             )
         return completed + float(remaining_value.item())
+
+    def _choose_action_value_ranked_action(
+        self,
+        encoded,
+    ) -> Dict[str, Any]:
+        candidates = self.trainer.rank_actions(
+            encoded,
+            self.env,
+            self.action_value_top_k,
+        )
+        if not candidates:
+            raise RuntimeError("actor produced no legal action-value candidates")
+        actions = [action for action, _ in candidates]
+        values = self._predict_action_values_for_actions(
+            self.action_value_model,
+            encoded,
+            actions,
+            self.device,
+        )
+        best_index = max(
+            range(len(actions)),
+            key=lambda index: (values[index], -index),
+        )
+        return actions[best_index]
 
     def _choose_value_reranked_action(self, encoded) -> Dict[str, Any]:
         candidates = self.trainer.rank_actions(

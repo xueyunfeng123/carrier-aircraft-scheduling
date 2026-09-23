@@ -239,6 +239,8 @@ def main() -> None:
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--value-checkpoint", type=str, default="")
+    parser.add_argument("--action-value-checkpoint", type=str, default="")
+    parser.add_argument("--action-value-top-k", type=int, default=3)
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-stochastic", action="store_true")
     parser.add_argument("--rl-hidden-dim", type=int, default=128)
@@ -269,6 +271,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.action_value_checkpoint:
+        from rl.value_calibration import validate_development_seeds
+
+        validate_development_seeds(
+            [args.seed + run_id for run_id in range(args.runs)],
+            "action-value evaluation",
+        )
     config = build_config(args)
     solver_options = {}
     if args.solver == "cp_sat":
@@ -279,6 +288,8 @@ def main() -> None:
         solver_options = {
             "checkpoint": args.checkpoint,
             "value_checkpoint": args.value_checkpoint,
+            "action_value_checkpoint": args.action_value_checkpoint,
+            "action_value_top_k": args.action_value_top_k,
             "device": args.rl_device,
             "deterministic": not args.rl_stochastic,
             "hidden_dim": args.rl_hidden_dim,

@@ -178,6 +178,21 @@ python -m scripts.solve \
     --checkpoint checkpoints/rl_policy.pt
 ```
 
+可选的直接 action-value 排序使用独立 Q checkpoint，一次批量评价 actor
+top-K 完整合法动作，不复制环境或读取未来随机状态：
+
+```bash
+python -m scripts.solve \
+    --solver rl \
+    --checkpoint checkpoints/rl_multiload_bc.pt \
+    --action-value-checkpoint checkpoints/rl_multiload_action_value.pt \
+    --action-value-top-k 3 \
+    --seed 43001
+```
+
+Q 网络和 actor checkpoint 严格分离，完整训练与种子协议见
+`doc/action_value_search.md`。
+
 注意：当前实现不会强制 checkpoint 存在。路径为空或文件不存在时，会
 使用随机初始化网络进行推理，这不代表训练后的 RL 效果。正式评估必须
 提供有效 checkpoint，并记录训练配置和随机种子。

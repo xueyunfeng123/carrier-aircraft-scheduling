@@ -275,6 +275,9 @@ python -m scripts.evaluate_rl --checkpoint checkpoints/rl_policy.pt
 # 复现跨负载训练与未见负载测试
 ./scripts/run_rl_multiload_experiment.sh
 
+# 训练并评估直接 action-conditioned Q 排序
+./scripts/run_action_value_experiment.sh
+
 # 旧版随机策略明细输出
 python -m scripts.random_policy_test
 
@@ -306,6 +309,10 @@ checkpoint。纯 PPO 对照可通过 `--bc-episodes 0` 运行。
 `--target-rank-prior` 消融。`--adaptive-low-rank-prior` 将固定飞机排序
 权重替换为按状态和作业类型学习的门控，详细结果见
 `doc/rl_generalization_iteration.md`。
+
+直接 action-value 排序使用独立 Q checkpoint 对 actor top-K 完整合法动作
+做一次批量 `Q(s,a)` 预测，不执行候选环境模拟。训练、种子协议和复现命令
+见 `doc/action_value_search.md`。
 
 冻结测试 `seed=40001-40020` 上，学习门控 BC+PPO、固定先验 RL 和
 CP-SAT 的平均完成架次分别为 120.20、119.75 和 119.50。学习门控策略

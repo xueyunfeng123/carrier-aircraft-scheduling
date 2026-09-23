@@ -8,6 +8,8 @@ import statistics
 from pathlib import Path
 
 from env.config import DEFAULT_CONFIG
+from rl.action_value import validate_action_value_evaluation_seeds
+from rl.checkpoint import load_checkpoint
 from scripts.evaluation_defaults import (
     DEFAULT_EVALUATION_DURATION,
     DEFAULT_EVALUATION_RUNS,
@@ -21,6 +23,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default="checkpoints/rl_policy.pt")
     parser.add_argument("--value-checkpoint", type=str, default="")
+    parser.add_argument("--action-value-checkpoint", type=str, default="")
+    parser.add_argument("--action-value-top-k", type=int, default=3)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--low-rank-prior", type=float)
@@ -75,6 +79,14 @@ def main() -> None:
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])
     args = parser.parse_args()
 
+    if args.action_value_checkpoint:
+        validate_action_value_evaluation_seeds(
+            [args.seed + run_id for run_id in range(args.runs)],
+            load_checkpoint(
+                args.action_value_checkpoint,
+                device=args.device,
+            ),
+        )
     config = build_config(args)
     results = [
         run_episode(
@@ -85,6 +97,10 @@ def main() -> None:
             solver_options={
                 "checkpoint": args.checkpoint,
                 "value_checkpoint": args.value_checkpoint,
+                "action_value_checkpoint": (
+                    args.action_value_checkpoint
+                ),
+                "action_value_top_k": args.action_value_top_k,
                 "device": args.device,
                 "deterministic": not args.stochastic,
                 "low_rank_prior": args.low_rank_prior,

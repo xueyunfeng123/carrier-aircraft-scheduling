@@ -66,6 +66,8 @@ def main() -> None:
     parser.add_argument("--rl-value-rerank-top-k", type=int, default=1)
     parser.add_argument("--rl-value-rerank-seed", type=int, default=0)
     parser.add_argument("--rl-value-checkpoint", type=str, default="")
+    parser.add_argument("--rl-action-value-checkpoint", type=str, default="")
+    parser.add_argument("--rl-action-value-top-k", type=int, default=3)
     parser.add_argument(
         "--rl-value-rerank-include-heuristic",
         action="store_true",
@@ -106,6 +108,21 @@ def main() -> None:
         parser.error(
             "RL value checkpoint does not exist: "
             f"{args.rl_value_checkpoint}"
+        )
+    if (
+        args.rl_action_value_checkpoint
+        and not Path(args.rl_action_value_checkpoint).is_file()
+    ):
+        parser.error(
+            "RL action-value checkpoint does not exist: "
+            f"{args.rl_action_value_checkpoint}"
+        )
+    if args.rl_action_value_checkpoint:
+        from rl.value_calibration import validate_development_seeds
+
+        validate_development_seeds(
+            [args.seed + run_id for run_id in range(args.runs)],
+            "action-value benchmark",
         )
     if args.rl_beam_checkpoint:
         if not Path(args.rl_beam_checkpoint).is_file():
@@ -156,6 +173,12 @@ def main() -> None:
                         args.rl_value_rerank_seed
                     ),
                     "value_checkpoint": args.rl_value_checkpoint,
+                    "action_value_checkpoint": (
+                        args.rl_action_value_checkpoint
+                    ),
+                    "action_value_top_k": (
+                        args.rl_action_value_top_k
+                    ),
                     "value_rerank_include_heuristic": (
                         args.rl_value_rerank_include_heuristic
                     ),
