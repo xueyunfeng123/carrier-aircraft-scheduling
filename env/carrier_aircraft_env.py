@@ -357,6 +357,83 @@ class CarrierAircraftSchedulingEnv:
         info = self._make_info(action_started=action_name)
         return self.get_state(), 0.0, self.done, info
 
+    def step_batch(
+        self,
+        actions: List[Any],
+        *,
+        advance: bool = True,
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        """Start an ordered dispatch batch, then advance one event boundary.
+
+        Every action is validated against the state produced by earlier actions
+        in the same batch. An empty batch is an explicit decision to leave
+        currently available resources idle until the next event.
+        """
+
+        if self.done:
+            info = self._make_info()
+            info.update(
+                {
+                    "batch_started_actions": [],
+                    "batch_size": 0,
+                    "batch_advanced": False,
+                }
+            )
+            return self.get_state(), 0.0, True, info
+
+        batch_time = self.time
+        total_reward = 0.0
+        started_actions: List[str] = []
+        last_info = self._make_info()
+
+        for batch_index, action in enumerate(actions):
+            if self.time != batch_time:
+                raise RuntimeError("batch action advanced simulation time")
+            parsed = self._parse_action(action)
+            if parsed is None or not self._is_action_valid(*parsed):
+                reward = -float(self.config["invalid_action_penalty"])
+                self.total_reward += reward
+                total_reward += reward
+                last_info = self._make_info(
+                    invalid_action=True,
+                    message=(
+                        "invalid_action_format"
+                        if parsed is None
+                        else "illegal_action"
+                    ),
+                )
+                last_info.update(
+                    {
+                        "batch_invalid_index": batch_index,
+                        "batch_started_actions": started_actions,
+                        "batch_size": len(started_actions),
+                        "batch_advanced": False,
+                    }
+                )
+                return self.get_state(), total_reward, self.done, last_info
+            _, reward, _, last_info = self.step(action)
+            total_reward += reward
+            action_started = last_info["action_started"]
+            if action_started is not None:
+                started_actions.append(action_started)
+
+        advanced = False
+        if advance and not self.done:
+            reward, completed = self._advance_time_to_next_event()
+            self.total_reward += reward
+            total_reward += reward
+            advanced = True
+            last_info = self._make_info(completed_counts=completed)
+
+        last_info.update(
+            {
+                "batch_started_actions": started_actions,
+                "batch_size": len(started_actions),
+                "batch_advanced": advanced,
+            }
+        )
+        return self.get_state(), total_reward, self.done, last_info
+
     def get_state(self) -> Dict[str, Any]:
         return {
             "time": self.time,
