@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
+from scripts.diagnose_batch_headroom import validate_development_seeds
 
 
 class BatchDispatchTest(unittest.TestCase):
@@ -71,6 +72,11 @@ class BatchDispatchTest(unittest.TestCase):
         self.assertEqual(info["batch_invalid_index"], 1)
         self.assertEqual(info["batch_started_actions"], ["L"])
         self.assertFalse(info["batch_advanced"])
+
+    def test_headroom_diagnostic_rejects_frozen_seeds(self) -> None:
+        validate_development_seeds([66001, 66002])
+        with self.assertRaisesRegex(ValueError, "70001"):
+            validate_development_seeds([66001, 70001])
 
 
 if __name__ == "__main__":
