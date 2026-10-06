@@ -111,6 +111,45 @@ class AircraftFailureLifecycleTest(unittest.TestCase):
         self.assertNotIn(0, env.failure_blocked_slots)
         env._validate_aircraft_inventory()
 
+    def test_repaired_aircraft_can_replace_same_slot_later(
+        self,
+    ) -> None:
+        env = CarrierAircraftSchedulingEnv(
+            {
+                "num_aircraft": 4,
+                "num_total_aircraft": 5,
+                "group_size": 2,
+                "num_parking_spots": 4,
+                "spatial_graph_enabled": False,
+                "wave_interval": 10.0,
+                "simulation_duration": 10.0,
+                "hangar_transfer_time": 1.0,
+                "disruptions": [
+                    {
+                        "kind": "aircraft_failure",
+                        "target": 0,
+                        "start_time": 1.0,
+                        "end_time": 3.0,
+                    },
+                    {
+                        "kind": "aircraft_failure",
+                        "target": 0,
+                        "start_time": 4.0,
+                        "end_time": 6.0,
+                    },
+                ],
+            }
+        )
+        env.reset(seed=7)
+
+        self._advance_to(env, 5.0)
+
+        self.assertEqual(
+            env.aircraft[0].physical_aircraft_id,
+            0,
+        )
+        env._validate_aircraft_inventory()
+
     def test_total_inventory_cannot_be_smaller_than_deck_fleet(
         self,
     ) -> None:

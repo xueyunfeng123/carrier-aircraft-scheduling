@@ -40,9 +40,13 @@ class RepairTelemetry:
     cached_actions: int = 0
     latencies_ms: List[float] = field(default_factory=list)
     solve_latencies_ms: List[float] = field(default_factory=list)
+    decision_records: List[Dict[str, Any]] = field(
+        default_factory=list
+    )
 
     def as_dict(self) -> Dict[str, Any]:
         ordered = sorted(self.latencies_ms)
+        ordered_solve = sorted(self.solve_latencies_ms)
         return {
             "decisions": self.decisions,
             "solve_calls": self.solve_calls,
@@ -53,6 +57,22 @@ class RepairTelemetry:
             "latency_p95_ms": self._quantile(ordered, 0.95),
             "latency_p99_ms": self._quantile(ordered, 0.99),
             "latency_max_ms": max(ordered, default=0.0),
+            "solve_latency_p50_ms": self._quantile(
+                ordered_solve,
+                0.50,
+            ),
+            "solve_latency_p95_ms": self._quantile(
+                ordered_solve,
+                0.95,
+            ),
+            "solve_latency_p99_ms": self._quantile(
+                ordered_solve,
+                0.99,
+            ),
+            "solve_latency_max_ms": max(
+                ordered_solve,
+                default=0.0,
+            ),
             "mean_solve_ms": (
                 statistics.mean(self.solve_latencies_ms)
                 if self.solve_latencies_ms
@@ -109,22 +129,37 @@ class RollingRepairSolver:
     def choose_action(self) -> Optional[Dict[str, Any]]:
         started = time.perf_counter()
         self.telemetry.decisions += 1
+        decision = self._decision_context()
 
         cached = self._choose_cached_action()
         if cached is not None:
             self.telemetry.cached_actions += 1
-            self._record_latency(started)
+            self._record_latency(
+                started,
+                decision,
+                source="cache",
+                action=cached,
+            )
             return cached
 
         fallback = self.fallback_solver.choose_action()
         if fallback is None:
-            self._record_latency(started)
+            self._record_latency(
+                started,
+                decision,
+                source="none",
+            )
             return None
         if int(fallback["high_level"]) in (
             ACTION_RECOVERY,
             ACTION_LAUNCH,
         ):
-            self._record_latency(started)
+            self._record_latency(
+                started,
+                decision,
+                source="priority",
+                action=fallback,
+            )
             return fallback
 
         control = (
@@ -134,7 +169,14 @@ class RollingRepairSolver:
         )
         if not control.trigger or control.budget_ms <= 0.0:
             self.telemetry.fallbacks += 1
-            self._record_latency(started)
+            self._record_latency(
+                started,
+                decision,
+                source="fallback",
+                action=fallback,
+                control=control,
+                plan_status="skipped",
+            )
             return fallback
 
         guidance = (
@@ -159,7 +201,14 @@ class RollingRepairSolver:
         )
         if not usable:
             self.telemetry.fallbacks += 1
-            self._record_latency(started)
+            self._record_latency(
+                started,
+                decision,
+                source="fallback",
+                action=fallback,
+                control=control,
+                plan=plan,
+            )
             return fallback
 
         self.incumbent_starts = dict(plan.start_ticks)
@@ -174,11 +223,27 @@ class RollingRepairSolver:
         if selected is None:
             self.telemetry.fallbacks += 1
             selected = fallback
-        self._record_latency(started)
+            source = "fallback"
+        else:
+            source = "repair"
+        self._record_latency(
+            started,
+            decision,
+            source=source,
+            action=selected,
+            control=control,
+            plan=plan,
+        )
         return selected
 
     def get_telemetry(self) -> Dict[str, Any]:
         return self.telemetry.as_dict()
+
+    def get_decision_records(self) -> List[Dict[str, Any]]:
+        return [
+            dict(record)
+            for record in self.telemetry.decision_records
+        ]
 
     def _choose_cached_action(self) -> Optional[Dict[str, Any]]:
         if self.cached_time != self.env.time:
@@ -198,7 +263,79 @@ class RollingRepairSolver:
                 return action
         return None
 
-    def _record_latency(self, started: float) -> None:
-        self.telemetry.latencies_ms.append(
-            (time.perf_counter() - started) * 1000.0
+    def _decision_context(self) -> Dict[str, Any]:
+        from rl.repair_control import (
+            CONTROL_FEATURE_NAMES,
+            encode_repair_control_state,
         )
+
+        return {
+            "decision_index": self.telemetry.decisions - 1,
+            "simulation_time": float(self.env.time),
+            **dict(
+                zip(
+                    CONTROL_FEATURE_NAMES,
+                    encode_repair_control_state(self.env),
+                )
+            ),
+        }
+
+    def _record_latency(
+        self,
+        started: float,
+        decision: Dict[str, Any],
+        source: str,
+        action: Optional[Dict[str, Any]] = None,
+        control: Optional[RepairControl] = None,
+        plan: Optional[RepairPlan] = None,
+        plan_status: str = "",
+    ) -> None:
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        self.telemetry.latencies_ms.append(latency_ms)
+        record = {
+            **decision,
+            "source": source,
+            "high_level": (
+                int(action["high_level"])
+                if action is not None
+                else ""
+            ),
+            "aircraft_id": (
+                int(action["aircraft_id"])
+                if action is not None
+                else ""
+            ),
+            "trigger": (
+                int(control.trigger)
+                if control is not None
+                else ""
+            ),
+            "scope": control.scope if control is not None else "",
+            "budget_ms": (
+                float(control.budget_ms)
+                if control is not None
+                else 0.0
+            ),
+            "neighborhood_size": (
+                int(control.neighborhood_size)
+                if control is not None
+                else 0
+            ),
+            "plan_status": (
+                plan.status
+                if plan is not None
+                else plan_status
+            ),
+            "solve_ms": (
+                float(plan.solve_ms)
+                if plan is not None
+                else 0.0
+            ),
+            "deadline_missed": (
+                int(plan.deadline_missed)
+                if plan is not None
+                else 0
+            ),
+            "latency_ms": latency_ms,
+        }
+        self.telemetry.decision_records.append(record)

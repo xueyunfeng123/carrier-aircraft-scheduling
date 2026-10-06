@@ -263,7 +263,13 @@ class CPSATRepairModel:
                 objective_terms.append(-10 * deviation)
             objective_terms.append(-task.priority * end)
 
-        capacities = self.env.get_state()["resources"]
+        self._add_active_resource_occupancy(
+            model,
+            intervals_by_resource,
+            personnel_demands,
+            max_end,
+        )
+        capacities = self._resource_capacities()
         self._add_cumulative(
             model,
             intervals_by_resource["fuel"],
@@ -404,6 +410,48 @@ class CPSATRepairModel:
             )
             if allowed
         ]
+        if control.scope == "affected":
+            affected_actions: set[ActionKey] = set()
+            action_by_service = {
+                "fuel": ACTION_FUEL,
+                "inspection": ACTION_INSPECTION,
+                "arm": ACTION_ARM,
+            }
+            for spec in self.env.active_disruptions.values():
+                if spec.kind in {
+                    "runway_closure",
+                    "aircraft_failure",
+                }:
+                    affected_actions.update(candidates)
+                elif spec.kind == "aircraft_hold":
+                    affected_actions.update(
+                        action_key
+                        for action_key in candidates
+                        if action_key[1] == int(spec.target)
+                    )
+                elif spec.kind == "service_slowdown":
+                    target = str(spec.target)
+                    affected_actions.update(
+                        action_key
+                        for action_key in candidates
+                        if target == "all"
+                        or action_key[0]
+                        == action_by_service.get(target)
+                    )
+                elif spec.kind == "vehicle_outage":
+                    service = str(spec.target).split("_", 1)[0]
+                    affected_actions.update(
+                        action_key
+                        for action_key in candidates
+                        if action_key[0]
+                        == action_by_service.get(service)
+                    )
+            if affected_actions:
+                candidates = [
+                    action_key
+                    for action_key in candidates
+                    if action_key in affected_actions
+                ]
         affected = set(self.env.unavailable_aircraft_ids)
         ranked_aircraft = sorted(
             {aircraft_id for _, aircraft_id in candidates},
@@ -421,9 +469,22 @@ class CPSATRepairModel:
                 aircraft_id,
             ),
         )
-        selected_aircraft = set(
-            ranked_aircraft[: control.neighborhood_size]
+        scope_limit = control.neighborhood_size
+        launches_remaining = max(
+            1,
+            self.env.group_size
+            - int(
+                self.env.wave_records[-1]["launches_started"]
+            ),
         )
+        if control.scope == "current_wave":
+            scope_limit = min(scope_limit, launches_remaining)
+        elif control.scope == "two_waves":
+            scope_limit = min(
+                scope_limit,
+                launches_remaining + self.env.group_size,
+            )
+        selected_aircraft = set(ranked_aircraft[:scope_limit])
         tasks = []
         for action_key in candidates:
             action, aircraft_id = action_key
@@ -457,6 +518,214 @@ class CPSATRepairModel:
                 )
             )
         return tasks
+
+    def _resource_capacities(self) -> Dict[str, int]:
+        available_service = {
+            service_type: sum(
+                vehicle.service_type == service_type
+                and vehicle.vehicle_id
+                not in self.env.unavailable_vehicle_ids
+                for vehicle in self.env.service_vehicles
+            )
+            for service_type in ("fuel", "inspection", "arm")
+        }
+        return {
+            "fuel_servers": available_service["fuel"],
+            "inspection_vehicles": available_service[
+                "inspection"
+            ],
+            "arm_vehicles": available_service["arm"],
+            "ammo_transport_vehicles": int(
+                self.env.config[
+                    "num_ammo_transport_vehicles"
+                ]
+            ),
+            "lower_weapon_lifts": int(
+                self.env.config["num_lower_weapon_lifts"]
+            ),
+            "upper_weapon_lifts": int(
+                self.env.config["num_upper_weapon_lifts"]
+            ),
+            "personnel": int(self.env.config["num_personnel"]),
+        }
+
+    def _add_active_resource_occupancy(
+        self,
+        model,
+        intervals_by_resource: Dict[str, List[Any]],
+        personnel_demands: List[int],
+        max_end: int,
+    ) -> None:
+        event_by_key = {
+            (event.event_type, event.aircraft_id): event.time
+            for event in self.env.event_queue
+        }
+        for vehicle in self.env.service_vehicles:
+            aircraft_id = vehicle.busy_aircraft_id
+            if (
+                aircraft_id is None
+                or vehicle.service_type
+                not in {"fuel", "inspection", "arm"}
+                or vehicle.vehicle_id
+                in self.env.unavailable_vehicle_ids
+            ):
+                continue
+            remaining = self._active_service_remaining(
+                vehicle.service_type,
+                aircraft_id,
+                event_by_key,
+            )
+            self._append_fixed_interval(
+                model,
+                intervals_by_resource[vehicle.service_type],
+                remaining,
+                max_end,
+                f"active_{vehicle.service_type}_{aircraft_id}",
+            )
+
+        for aircraft_id, aircraft in enumerate(self.env.aircraft):
+            if aircraft.arm_status != 1:
+                continue
+            if aircraft.arm_stage == 1:
+                remaining = max(
+                    0.0,
+                    event_by_key.get(
+                        (
+                            "ammo_to_assembly_done",
+                            aircraft_id,
+                        ),
+                        self.env.time,
+                    )
+                    - self.env.time,
+                )
+                for resource in (
+                    "ammo_transport",
+                    "lower_lift",
+                ):
+                    self._append_fixed_interval(
+                        model,
+                        intervals_by_resource[resource],
+                        remaining,
+                        max_end,
+                        f"active_{resource}_{aircraft_id}",
+                    )
+            elif aircraft.arm_stage == 3:
+                remaining = max(
+                    0.0,
+                    event_by_key.get(
+                        ("arm_done", aircraft_id),
+                        self.env.time,
+                    )
+                    - self.env.time,
+                )
+                self._append_fixed_interval(
+                    model,
+                    intervals_by_resource["upper_lift"],
+                    remaining,
+                    max_end,
+                    f"active_upper_lift_{aircraft_id}",
+                )
+
+        if not bool(
+            self.env.config["personnel_scheduling_enabled"]
+        ):
+            return
+        personnel_by_service = {
+            "fuel": int(
+                self.env.config["fuel_personnel_required"]
+            ),
+            "inspection": int(
+                self.env.config[
+                    "inspection_personnel_required"
+                ]
+            ),
+            "arm": int(
+                self.env.config["arm_personnel_required"]
+            ),
+        }
+        for aircraft_id, aircraft in enumerate(self.env.aircraft):
+            for service_type, active in (
+                ("fuel", aircraft.fuel_status == 1),
+                (
+                    "inspection",
+                    aircraft.inspection_status == 1,
+                ),
+                ("arm", aircraft.arm_status == 1),
+            ):
+                if not active:
+                    continue
+                remaining = self._active_service_remaining(
+                    service_type,
+                    aircraft_id,
+                    event_by_key,
+                )
+                before = len(
+                    intervals_by_resource["personnel"]
+                )
+                self._append_fixed_interval(
+                    model,
+                    intervals_by_resource["personnel"],
+                    remaining,
+                    max_end,
+                    (
+                        "active_personnel_"
+                        f"{service_type}_{aircraft_id}"
+                    ),
+                )
+                if (
+                    len(intervals_by_resource["personnel"])
+                    > before
+                ):
+                    personnel_demands.append(
+                        personnel_by_service[service_type]
+                    )
+
+    def _active_service_remaining(
+        self,
+        service_type: str,
+        aircraft_id: int,
+        event_by_key: Mapping[Tuple[str, int], float],
+    ) -> float:
+        event_type = {
+            "fuel": "fuel_done",
+            "inspection": "inspection_done",
+            "arm": "arm_done",
+        }[service_type]
+        event_time = event_by_key.get((event_type, aircraft_id))
+        if event_time is not None:
+            return max(0.0, event_time - self.env.time)
+        if service_type != "arm":
+            return 0.0
+        aircraft = self.env.aircraft[aircraft_id]
+        first_stage_remaining = max(
+            0.0,
+            event_by_key.get(
+                ("ammo_to_assembly_done", aircraft_id),
+                self.env.time,
+            )
+            - self.env.time,
+        )
+        upper_stage = (
+            float(self.env.config["upper_lift_time_mean"])
+            + aircraft.arm_quantity_required
+            * float(self.env.config["arm_unit_time_mean"])
+        ) * self.env.service_time_multipliers["arm"]
+        return first_stage_remaining + upper_stage
+
+    def _append_fixed_interval(
+        self,
+        model,
+        intervals: List[Any],
+        remaining: float,
+        max_end: int,
+        name: str,
+    ) -> None:
+        if remaining <= 0.0:
+            return
+        duration = min(max_end, self._ticks(remaining))
+        intervals.append(
+            model.NewFixedSizeIntervalVar(0, duration, name)
+        )
 
     def _arm_stage_one_ticks(self) -> int:
         duration = (

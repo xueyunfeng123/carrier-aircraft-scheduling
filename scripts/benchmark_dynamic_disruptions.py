@@ -11,10 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from env.config import DEFAULT_CONFIG
+from env.disruptions import PROFILE_SETTINGS
 from scripts.solve import run_episode
 
 
-PROFILES = ("none", "light", "medium", "heavy")
+PROFILES = tuple(PROFILE_SETTINGS)
 
 
 def main() -> None:

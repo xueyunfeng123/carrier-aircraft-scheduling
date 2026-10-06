@@ -12,7 +12,7 @@
 任务周期：
 
 ```
-放飞 → 升空执行任务 → 回收 → 加油 ‖ 挂弹 → 再次放飞
+放飞 → 升空执行任务 → 回收 → 加油 ‖ 检查 ‖ 挂弹 → 再次放飞
 ```
 
 **优化目标**：在固定的 `simulation_duration`（默认 720 时间单位）内，
@@ -39,18 +39,19 @@
 
 ## 3. 飞机状态机
 
-每架飞机有四个状态维度：
+每架飞机有五个状态维度：
 
 | 维度             | 取值     | 含义                        |
 |------------------|----------|-----------------------------|
 | `recovery_status` | 0/1/2   | 等待回收 / 回收中 / 已完成  |
 | `fuel_status`     | 0/1/2   | 等待加油 / 加油中 / 已完成  |
+| `inspection_status` | 0/1/2 | 等待检查 / 检查中 / 已完成  |
 | `arm_status`      | 0/1/2   | 等待挂弹 / 挂弹中 / 已完成  |
 | `launch_status`   | 0/1/2/3 | 未就绪 / 待放飞 / 放飞中 / 已完成 |
 
 **关键规则：**
 - 加油和挂弹**可以并行**（同一架飞机可同时处于加油中和挂弹中）
-- 放飞**必须**等加油和挂弹均完成（`fuel_status=2` 且 `arm_status=2`）
+- 放飞必须等加油、检查和挂弹均完成
 - 放飞完成后，飞机变为升空状态，并在下一波进入回收队列
 
 ---
@@ -60,11 +61,12 @@
 | 资源         | 数量 | 说明                       |
 |--------------|------|----------------------------|
 | 回收通道     | 1    | 独占，一次只能回收一架     |
-| 起飞位       | 4    | 图上的位置容量             |
-| 放飞通道     | 1    | 作业容量，一次只能放飞一架 |
+| 起飞位       | 3    | 图上的位置容量             |
+| 放飞通道     | 3    | 作业容量                   |
 | 甲板停机位   | 45   | 起飞区 10、着舰区 10、保障区 25 |
 | 通道节点     | 19   | 结构复现实验假设           |
 | 加油服务器   | 20   | 可并行                     |
+| 检查车辆     | 10   | 可并行                     |
 | 挂弹车       | 10   | 可并行                     |
 | 保障人员     | 50   | 加油耗 4 人/架，挂弹耗 4 人/架 |
 
@@ -85,6 +87,7 @@
 | 1  | F    | 加油 |
 | 2  | M    | 挂弹 |
 | 3  | L    | 放飞 |
+| 4  | I    | 检查 |
 
 ### 低层动作
 
@@ -95,6 +98,7 @@
 - **R**：上一波实际放飞且 `pending_recovery=true` 的飞机
 - **F**：已完成回收、未加油的飞机
 - **M**：已完成回收、未挂弹的飞机
+- **I**：已完成回收、未检查的飞机
 - **L**：共享机队中加油和挂弹均完成的飞机，直到本波填满 20 个席位
 
 ---
@@ -129,7 +133,7 @@
 | `wave_interval`          | 120.0  | 波次间隔             |
 | `simulation_duration`    | 720.0  | 总模拟时长           |
 | `spatial_graph_enabled`  | true   | 是否启用甲板路径约束 |
-| `num_launch_positions`   | 4      | 空间图起飞位节点数   |
+| `num_launch_positions`   | 3      | 空间图起飞位节点数   |
 | `deck_edge_travel_time`  | 1.0    | 每条结构图边的移动分钟数 |
 
 挂弹总时间 = 每枚弹药独立采样的累加。弹药数量在回收完成时从
@@ -243,9 +247,9 @@ python -m scripts.run_yoon_baseline \
 
 激活环境后，从项目根目录执行：
 
-正式基线统一使用 60 分钟波次、12 个完整波次和单一环境种子
-`10007`。这些默认值集中定义在 `scripts/evaluation_defaults.py`；PPO
-训练使用独立种子 `7`。
+旧版基线默认值集中定义在 `scripts/evaluation_defaults.py`。投稿级实验
+使用独立的 train/selection/calibration/dev/final seed 分区，详见
+[`doc/evaluation_protocol.md`](doc/evaluation_protocol.md)。
 
 ```bash
 # 默认启发式求解
@@ -257,7 +261,15 @@ python -m scripts.solve --solver fifo
 python -m scripts.solve --solver spt
 python -m scripts.solve --solver edd
 python -m scripts.solve --solver cp_sat --cp-sat-max-time 0.05
+python -m scripts.solve --solver cp_sat_repair --repair-budget-ms 50
+python -m scripts.solve \
+    --solver event_cp_sat_repair \
+    --repair-budget-ms 50
 python -m scripts.solve --solver rl --checkpoint checkpoints/rl_policy.pt
+python -m scripts.solve \
+    --solver rl_cp_sat \
+    --checkpoint checkpoints/rl_policy.pt \
+    --repair-budget-ms 50
 
 # 关闭空间图，运行匹配对照
 python -m scripts.solve --solver heuristic --disable-spatial-graph
@@ -295,6 +307,40 @@ python -m scripts.benchmark_cbs_paths
 # 相同 RL checkpoint 下关闭/启用 CBS 的高负载配对实验
 ./scripts/run_rl_cbs_experiment.sh
 ```
+
+## 复合扰动实时重调度
+
+`compound_light/medium/heavy` 在历史 availability profile 基础上加入
+实体飞机故障、机库维修和备机替换。`cp_sat_repair` 是带 incumbent、
+在执行作业占用和墙钟预算的滚动修复基线；`rl_cp_sat` 使用 actor 分数，
+并由规则或学习控制器选择触发、范围、预算和邻域。
+
+```bash
+python -m scripts.run_publishable_benchmark \
+    --phase dev \
+    --profiles none compound_medium compound_heavy \
+    --intervals 52.5 57.5 62.5 \
+    --budgets-ms 10 50 200 \
+    --solvers heuristic cp_sat_repair event_cp_sat_repair rl_cp_sat \
+    --output-dir outputs/publishable_dev
+```
+
+Oracle 数据采集和控制器训练：
+
+```bash
+python -m scripts.collect_repair_control_oracle \
+    --phase train \
+    --output outputs/repair_control_train.csv
+python -m scripts.train_repair_control \
+    --train-csv outputs/repair_control_train.csv \
+    --validation-csv outputs/repair_control_selection.csv \
+    --checkpoint checkpoints/repair_control.pt
+```
+
+方法、当前开发证据和限制见
+[`doc/hybrid_rescheduling_method.md`](doc/hybrid_rescheduling_method.md)；
+冻结 seed、manifest、三表 schema 和配对统计见
+[`doc/evaluation_protocol.md`](doc/evaluation_protocol.md)。
 
 RL 策略采用“作业类型→飞机→目标停机位/跑道/车辆”的三层 masked
 动作。默认训练从 5 个训练 seed 收集 Heuristic 示范并进行行为克隆，再

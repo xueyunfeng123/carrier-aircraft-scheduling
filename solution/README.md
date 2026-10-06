@@ -32,6 +32,7 @@ choose_action() -> Optional[Dict[str, int]]
 | 1 | `F` | 开始加油 |
 | 2 | `M` | 开始挂弹 |
 | 3 | `L` | 开始放飞 |
+| 4 | `I` | 开始检查 |
 
 没有合法动作时返回 `None`，由环境将时间推进到下一个事件。求解器不得
 绕过 `env.get_action_mask()` 生成非法动作。
@@ -46,7 +47,10 @@ choose_action() -> Optional[Dict[str, int]]
 | `edd` | `EDDSolver` | 经典派工规则 | 否 | 最早波次截止时间优先基线 |
 | `heuristic` | `WaveHeuristicSolver` | 规则启发式 | 否 | 当前主要非学习基线 |
 | `cp_sat` | `CPSATSolver` | 滚动整数优化 | 否 | 优化当前批次的资源分配 |
+| `cp_sat_repair` | `RollingRepairSolver` | 有预算滚动修复 | 否 | 动态扰动强优化基线 |
+| `event_cp_sat_repair` | `EventTriggeredRepairSolver` | 事件触发滚动修复 | 否 | 隔离事件触发贡献 |
 | `rl` | `RLSolver` | 神经网络策略 | 是 | 加载 PPO checkpoint 进行推理 |
+| `rl_cp_sat` | `HybridReschedulingSolver` | RL-CP-SAT 混合 | 是 | 事件触发实时重调度 |
 
 ## RandomSolver
 
@@ -181,6 +185,52 @@ python -m scripts.solve \
 使用随机初始化网络进行推理，这不代表训练后的 RL 效果。正式评估必须
 提供有效 checkpoint，并记录训练配置和随机种子。
 
+## RollingRepairSolver
+
+文件：`solution/rolling_repair_solver.py`、
+`solution/cp_sat_repair_model.py`
+
+该 solver 对当前与后续波次的保障作业建立期望时长 CP-SAT 模型，并：
+
+- 对加油、检查、装弹、弹药转运、上下层升降机和人员建累计容量；
+- 将已在执行作业的剩余时间作为固定占用区间；
+- 使用上一轮启动时间作为 incumbent hint；
+- 通过 `current_wave/two_waves/affected` 控制修复范围；
+- 通过邻域规模和 10/50/200 ms 预算控制计算量；
+- 预算超时、无可行解或动作复核失败时回退 Heuristic。
+
+```bash
+python -m scripts.solve \
+    --solver cp_sat_repair \
+    --repair-budget-ms 50 \
+    --repair-neighborhood-size 16 \
+    --repair-scope two_waves
+```
+
+## HybridReschedulingSolver
+
+文件：`solution/hybrid_rescheduling_solver.py`、
+`rl/repair_control.py`
+
+actor 同时提供合法 fallback action 和 `(作业, 飞机)` guidance score。
+控制器输出 trigger、scope、budget 和 neighborhood。未指定 control
+checkpoint 时使用事件触发规则；指定后加载四头学习控制器。
+
+```bash
+python -m scripts.solve \
+    --solver rl_cp_sat \
+    --checkpoint checkpoints/rl_policy.pt \
+    --repair-control-checkpoint checkpoints/repair_control.pt \
+    --repair-budget-ms 50
+```
+
+`get_decision_records()` 返回逐决策控制特征、来源、预算、CP 状态、求解
+时间、deadline miss 和端到端延迟。当前 deadline 为 soft real-time：
+超时结果被丢弃，但尚未通过独立进程强制中断模型构建/求解。
+
+`event_cp_sat_repair` 使用相同的规则事件触发器和 Heuristic fallback，
+但不使用 RL actor guidance，是 `rl_cp_sat` 的关键非学习对照。
+
 ## 如何选择
 
 | 场景 | 推荐求解器 |
@@ -190,6 +240,9 @@ python -m scripts.solve \
 | 获得快速、较强的规则基线 | `heuristic` |
 | 测试滚动整数资源分配 | `cp_sat` |
 | 评估训练后的神经网络策略 | `rl` |
+| 动态扰动滚动修复基线 | `cp_sat_repair` |
+| 隔离事件触发和 RL guidance | `event_cp_sat_repair` |
+| 质量-延迟自适应混合调度 | `rl_cp_sat` |
 
 所有方法应在完全相同的环境参数和随机种子上比较，主指标统一使用
 `total_sorties_completed`。`total_missed_sorties`、运行步数和计算耗时

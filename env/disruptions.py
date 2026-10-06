@@ -59,6 +59,30 @@ PROFILE_SETTINGS = {
         "duration": (40.0, 60.0),
         "multiplier": 2.0,
     },
+    "compound_light": {
+        "vehicle_count": 1,
+        "runway_count": 1,
+        "aircraft_count": 2,
+        "failure_ranks": (0,),
+        "duration": (10.0, 20.0),
+        "multiplier": 1.25,
+    },
+    "compound_medium": {
+        "vehicle_count": 3,
+        "runway_count": 1,
+        "aircraft_count": 5,
+        "failure_ranks": (0, 2),
+        "duration": (25.0, 40.0),
+        "multiplier": 1.50,
+    },
+    "compound_heavy": {
+        "vehicle_count": 6,
+        "runway_count": 2,
+        "aircraft_count": 9,
+        "failure_ranks": (0, 2, 5, 7),
+        "duration": (40.0, 60.0),
+        "multiplier": 2.0,
+    },
 }
 
 DISRUPTION_KINDS = (
@@ -122,11 +146,31 @@ def build_disruption_schedule(
 
     horizon = float(config["simulation_duration"])
     configured_duration_min, configured_duration_max = settings["duration"]
+    is_compound = "failure_ranks" in settings
+    if is_compound:
+        configured_duration_max = min(
+            float(configured_duration_max),
+            0.20 * horizon,
+        )
+        configured_duration_min = min(
+            float(configured_duration_min),
+            float(configured_duration_max),
+        )
     duration_max = min(float(configured_duration_max), horizon)
     duration_min = min(float(configured_duration_min), duration_max)
+    if is_compound and (
+        len(candidates["vehicle_outage"]) < vehicle_count
+        or len(candidates["runway_closure"]) < runway_count
+        or len(candidates["aircraft_hold"]) < aircraft_count
+    ):
+        raise ValueError(
+            "compound disruption profile has insufficient targets "
+            "for its configured severity"
+        )
     schedule: List[DisruptionSpec] = []
     disruption_id = 0
     shock_centers = (0.25, 0.50, 0.75)
+    previous_end = 0.0
     for center_fraction in shock_centers:
         center = horizon * center_fraction
         jitter = rng.uniform(-0.03, 0.03) * horizon
@@ -135,7 +179,10 @@ def build_disruption_schedule(
             horizon - duration,
             max(0.0, center + jitter),
         )
+        if is_compound:
+            start_time = max(previous_end, start_time)
         end_time = start_time + duration
+        previous_end = end_time
 
         vehicle_targets = list(candidates["vehicle_outage"])
         runway_targets = list(candidates["runway_closure"])
@@ -143,6 +190,18 @@ def build_disruption_schedule(
         rng.shuffle(vehicle_targets)
         rng.shuffle(runway_targets)
         rng.shuffle(aircraft_targets)
+        selected_aircraft = aircraft_targets[:aircraft_count]
+        failure_ranks = set(settings.get("failure_ranks", ()))
+        failure_targets = [
+            target
+            for rank, target in enumerate(selected_aircraft)
+            if rank in failure_ranks
+        ]
+        hold_targets = [
+            target
+            for rank, target in enumerate(selected_aircraft)
+            if rank not in failure_ranks
+        ]
         selected_targets = (
             (
                 "vehicle_outage",
@@ -154,7 +213,11 @@ def build_disruption_schedule(
             ),
             (
                 "aircraft_hold",
-                aircraft_targets[:aircraft_count],
+                hold_targets,
+            ),
+            (
+                "aircraft_failure",
+                failure_targets,
             ),
             ("service_slowdown", ["all"]),
         )

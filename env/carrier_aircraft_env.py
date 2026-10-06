@@ -1397,6 +1397,7 @@ class CarrierAircraftSchedulingEnv:
             spec.disruption_id: spec
             for spec in self.disruption_schedule
         }
+        self._validate_disruption_interactions()
         for spec in self.disruption_schedule:
             self._validate_disruption_spec(spec)
             if spec.start_time <= self.time:
@@ -1419,6 +1420,29 @@ class CarrierAircraftSchedulingEnv:
                 "disruption_end",
                 spec.disruption_id,
             )
+
+    def _validate_disruption_interactions(self) -> None:
+        aircraft_disruptions = [
+            spec
+            for spec in self.disruption_schedule
+            if spec.kind in {"aircraft_hold", "aircraft_failure"}
+        ]
+        for index, first in enumerate(aircraft_disruptions):
+            for second in aircraft_disruptions[index + 1 :]:
+                if int(first.target) != int(second.target):
+                    continue
+                overlap = max(
+                    first.start_time,
+                    second.start_time,
+                ) < min(first.end_time, second.end_time)
+                if overlap and "aircraft_failure" in {
+                    first.kind,
+                    second.kind,
+                }:
+                    raise ValueError(
+                        "overlapping aircraft failure disruptions "
+                        f"target slot {first.target}"
+                    )
 
     def _validate_disruption_spec(
         self,
@@ -1777,12 +1801,9 @@ class CarrierAircraftSchedulingEnv:
             for physical_id, _ in self.replacement_in_transit.values()
         }
         outbound_ids = {
-            self.failure_physical_by_disruption[disruption_id]
-            for disruption_id in self.failure_transfer_started
-            if self.aircraft[
-                self.failure_slot_by_disruption[disruption_id]
-            ].lifecycle_status
-            == "to_hangar"
+            self.failure_physical_by_disruption[event.aircraft_id]
+            for event in self.event_queue
+            if event.event_type == "hangar_transfer_done"
         }
         categories = {
             "deck": deck_ids,

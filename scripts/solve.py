@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import csv
 import statistics
+import time
 from typing import Any, Dict, List, Type
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
+from env.disruptions import PROFILE_SETTINGS
 from scripts.evaluation_defaults import (
     DEFAULT_EVALUATION_DURATION,
     DEFAULT_EVALUATION_SEED,
@@ -24,6 +26,9 @@ from solution import (
     SPTSolver,
     WaveHeuristicSolver,
 )
+from solution.event_triggered_repair_solver import (
+    EventTriggeredRepairSolver,
+)
 from solution.hybrid_rescheduling_solver import (
     HybridReschedulingSolver,
 )
@@ -33,6 +38,7 @@ SOLVERS: Dict[str, Type] = {
     "cp_sat": CPSATSolver,
     "cp_sat_repair": RollingRepairSolver,
     "edd": EDDSolver,
+    "event_cp_sat_repair": EventTriggeredRepairSolver,
     "fifo": FIFOSolver,
     "heuristic": WaveHeuristicSolver,
     "random": RandomSolver,
@@ -58,6 +64,7 @@ def run_episode(
     elif solver_name in (
         "cp_sat",
         "cp_sat_repair",
+        "event_cp_sat_repair",
         "rl_cp_sat",
     ):
         solver = solver_cls(env, **solver_options)
@@ -69,9 +76,32 @@ def run_episode(
     total_reward = 0.0
     steps = 0
     started_actions = {name: 0 for name in HIGH_LEVEL_ACTIONS.values()}
+    generic_decisions: List[Dict[str, Any]] = []
 
     while not env.done and steps < max_steps:
+        decision_started = time.perf_counter()
         action = solver.choose_action()
+        decision_latency_ms = (
+            time.perf_counter() - decision_started
+        ) * 1000.0
+        generic_decisions.append(
+            {
+                "decision_index": steps,
+                "simulation_time": float(env.time),
+                "source": "solver",
+                "high_level": (
+                    int(action["high_level"])
+                    if action is not None
+                    else ""
+                ),
+                "aircraft_id": (
+                    int(action["aircraft_id"])
+                    if action is not None
+                    else ""
+                ),
+                "latency_ms": decision_latency_ms,
+            }
+        )
         _, reward, done, info = env.step(action)
         total_reward += reward
         steps += 1
@@ -81,10 +111,45 @@ def run_episode(
             break
 
     metrics = env.get_evaluation_metrics()
-    solver_telemetry = (
-        solver.get_telemetry()
-        if hasattr(solver, "get_telemetry")
-        else {}
+    if hasattr(solver, "get_telemetry"):
+        solver_telemetry = solver.get_telemetry()
+    else:
+        ordered_latencies = sorted(
+            float(record["latency_ms"])
+            for record in generic_decisions
+        )
+        solver_telemetry = {
+            "decisions": len(generic_decisions),
+            "solve_calls": 0,
+            "deadline_misses": 0,
+            "fallbacks": 0,
+            "cached_actions": 0,
+            "latency_p50_ms": _latency_quantile(
+                ordered_latencies,
+                0.50,
+            ),
+            "latency_p95_ms": _latency_quantile(
+                ordered_latencies,
+                0.95,
+            ),
+            "latency_p99_ms": _latency_quantile(
+                ordered_latencies,
+                0.99,
+            ),
+            "latency_max_ms": max(
+                ordered_latencies,
+                default=0.0,
+            ),
+            "solve_latency_p50_ms": 0.0,
+            "solve_latency_p95_ms": 0.0,
+            "solve_latency_p99_ms": 0.0,
+            "solve_latency_max_ms": 0.0,
+            "mean_solve_ms": 0.0,
+        }
+    decision_records = (
+        solver.get_decision_records()
+        if hasattr(solver, "get_decision_records")
+        else generic_decisions
     )
     return {
         "solver": solver_name,
@@ -104,11 +169,25 @@ def run_episode(
         "disruptions": metrics["disruptions"],
         "scenario_tape": metrics["scenario_tape"],
         "solver_telemetry": solver_telemetry,
+        "decision_records": decision_records,
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
         "missed_sortie_records": env.get_missed_sortie_records(),
         "event_log": env.get_event_log(),
     }
+
+
+def _latency_quantile(
+    values: List[float],
+    fraction: float,
+) -> float:
+    if not values:
+        return 0.0
+    index = min(
+        len(values) - 1,
+        max(0, int(round((len(values) - 1) * fraction))),
+    )
+    return float(values[index])
 
 
 def build_config(args: argparse.Namespace) -> Dict[str, Any]:
@@ -242,7 +321,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--disruption-profile",
-        choices=("none", "light", "medium", "heavy"),
+        choices=tuple(PROFILE_SETTINGS),
         default=DEFAULT_CONFIG["disruption_profile"],
     )
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
@@ -301,7 +380,10 @@ def main() -> None:
         solver_options = {
             "max_time_seconds": args.cp_sat_max_time,
         }
-    elif args.solver == "cp_sat_repair":
+    elif args.solver in (
+        "cp_sat_repair",
+        "event_cp_sat_repair",
+    ):
         solver_options = {
             "budget_ms": args.repair_budget_ms,
             "neighborhood_size": args.repair_neighborhood_size,

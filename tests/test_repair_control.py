@@ -14,6 +14,9 @@ from rl.repair_control import (
 from solution.hybrid_rescheduling_solver import (
     HybridReschedulingSolver,
 )
+from solution.event_triggered_repair_solver import (
+    EventTriggeredRepairSolver,
+)
 
 
 class RepairControlTest(unittest.TestCase):
@@ -66,6 +69,29 @@ class RepairControlTest(unittest.TestCase):
             initial.budget_ms,
         )
 
+    def test_rule_controller_respects_experiment_caps(self) -> None:
+        env = self._env(
+            disruptions=[
+                {
+                    "kind": "runway_closure",
+                    "target": 0,
+                    "start_time": 1.0,
+                    "end_time": 3.0,
+                }
+            ]
+        )
+        controller = RuleBasedRepairController(
+            max_budget_ms=10.0,
+            max_neighborhood_size=8,
+        )
+        controller(env)
+        env._advance_time_to_next_event()
+
+        disrupted = controller(env)
+
+        self.assertEqual(disrupted.budget_ms, 10.0)
+        self.assertEqual(disrupted.neighborhood_size, 8)
+
     def test_control_network_heads_have_valid_shapes(self) -> None:
         import torch
 
@@ -102,6 +128,31 @@ class RepairControlTest(unittest.TestCase):
         self.assertEqual(
             solver.get_telemetry()["controller"],
             "rule",
+        )
+
+    def test_non_learning_event_repair_returns_legal_action(
+        self,
+    ) -> None:
+        env = self._env()
+        for aircraft in env.aircraft:
+            aircraft.launch_status = 0
+        env.aircraft[0].inspection_status = 0
+        env._invalidate_planning_cache()
+        solver = EventTriggeredRepairSolver(
+            env,
+            budget_ms=200.0,
+            neighborhood_size=4,
+        )
+
+        action = solver.choose_action()
+
+        self.assertIsNotNone(action)
+        parsed = env._parse_action(action)
+        self.assertIsNotNone(parsed)
+        self.assertTrue(env._is_action_valid(*parsed))
+        self.assertEqual(
+            solver.get_telemetry()["solve_calls"],
+            1,
         )
 
     def _env(self, **overrides) -> CarrierAircraftSchedulingEnv:

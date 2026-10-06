@@ -45,6 +45,7 @@ from scripts.evaluation_defaults import (
     DEFAULT_EVALUATION_WAVE_INTERVAL,
     DEFAULT_TRAINING_SEED,
 )
+from scripts.evaluation_protocol import reject_frozen_final_seeds
 from scripts.solve import build_config, run_episode
 
 
@@ -196,6 +197,11 @@ def main() -> None:
         args.eval_seed,
         args.eval_runs,
         args.validation_seeds,
+    )
+    reject_frozen_final_seeds(training_seeds, "RL training")
+    reject_frozen_final_seeds(
+        validation_seeds,
+        "checkpoint selection",
     )
     validate_seed_partition(
         training_seeds,

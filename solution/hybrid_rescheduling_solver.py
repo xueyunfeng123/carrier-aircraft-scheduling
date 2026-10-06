@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from rl.repair_control import (
@@ -40,9 +40,14 @@ class HybridReschedulingSolver:
             LearnedRepairController(
                 control_checkpoint,
                 device=control_device,
+                max_budget_ms=budget_ms,
+                max_neighborhood_size=neighborhood_size,
             )
             if control_checkpoint
-            else RuleBasedRepairController()
+            else RuleBasedRepairController(
+                max_budget_ms=budget_ms,
+                max_neighborhood_size=neighborhood_size,
+            )
         )
         self.repair_solver = RollingRepairSolver(
             env,
@@ -71,3 +76,6 @@ class HybridReschedulingSolver:
             else "rule"
         )
         return telemetry
+
+    def get_decision_records(self) -> List[Dict[str, Any]]:
+        return self.repair_solver.get_decision_records()

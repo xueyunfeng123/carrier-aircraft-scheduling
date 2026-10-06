@@ -138,6 +138,142 @@ class DynamicDisruptionTest(unittest.TestCase):
                 schedules["heavy"][key],
             )
 
+    def test_compound_profiles_include_failure_lifecycle_events(
+        self,
+    ) -> None:
+        expected = {
+            "compound_light": (15, 3, 3),
+            "compound_medium": (30, 6, 9),
+            "compound_heavy": (54, 12, 15),
+        }
+        for profile, (
+            total,
+            failures,
+            holds,
+        ) in expected.items():
+            with self.subTest(profile=profile):
+                env = CarrierAircraftSchedulingEnv(
+                    {
+                        "num_aircraft": 12,
+                        "num_total_aircraft": 24,
+                        "group_size": 6,
+                        "num_parking_spots": 12,
+                        "num_launch_positions": 3,
+                        "simulation_duration": 100.0,
+                        "wave_interval": 20.0,
+                        "spatial_graph_enabled": False,
+                        "disruption_profile": profile,
+                    }
+                )
+                env.reset(seed=19)
+                kinds = [
+                    spec.kind
+                    for spec in env.disruption_schedule
+                ]
+
+                self.assertEqual(len(kinds), total)
+                self.assertEqual(
+                    kinds.count("aircraft_failure"),
+                    failures,
+                )
+                self.assertEqual(
+                    kinds.count("aircraft_hold"),
+                    holds,
+                )
+
+    def test_compound_aircraft_targets_do_not_overlap_failures(
+        self,
+    ) -> None:
+        env = CarrierAircraftSchedulingEnv(
+            {
+                "num_aircraft": 12,
+                "num_total_aircraft": 24,
+                "group_size": 6,
+                "num_parking_spots": 12,
+                "num_launch_positions": 3,
+                "simulation_duration": 100.0,
+                "wave_interval": 20.0,
+                "spatial_graph_enabled": False,
+                "disruption_profile": "compound_heavy",
+            }
+        )
+        env.reset(seed=19)
+        aircraft_disruptions = [
+            spec
+            for spec in env.disruption_schedule
+            if spec.kind in {
+                "aircraft_hold",
+                "aircraft_failure",
+            }
+        ]
+
+        for index, first in enumerate(aircraft_disruptions):
+            for second in aircraft_disruptions[index + 1 :]:
+                overlap = max(
+                    first.start_time,
+                    second.start_time,
+                ) < min(first.end_time, second.end_time)
+                conflicting_kind = "aircraft_failure" in {
+                    first.kind,
+                    second.kind,
+                }
+                self.assertFalse(
+                    overlap
+                    and conflicting_kind
+                    and first.target == second.target
+                )
+
+    def test_compound_short_horizon_keeps_future_events(
+        self,
+    ) -> None:
+        env = CarrierAircraftSchedulingEnv(
+            self._config(
+                disruption_profile="compound_light",
+                simulation_duration=5.0,
+                wave_interval=2.5,
+            )
+        )
+        env.reset(seed=19)
+
+        self.assertTrue(
+            all(
+                0.0 < spec.start_time < spec.end_time <= 5.0
+                for spec in env.disruption_schedule
+            )
+        )
+        self.assertTrue(
+            any(
+                spec.kind == "aircraft_failure"
+                for spec in env.disruption_schedule
+            )
+        )
+
+    def test_overlapping_explicit_failures_are_rejected(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "overlapping aircraft failure",
+        ):
+            CarrierAircraftSchedulingEnv(
+                self._config(
+                    disruptions=[
+                        {
+                            "kind": "aircraft_failure",
+                            "target": 0,
+                            "start_time": 1.0,
+                            "end_time": 4.0,
+                        },
+                        {
+                            "kind": "aircraft_failure",
+                            "target": 0,
+                            "start_time": 3.0,
+                            "end_time": 5.0,
+                        },
+                    ]
+                )
+            )
+
     def test_vehicle_outage_masks_target_and_restores_it(self) -> None:
         env = self._explicit_env(
             {

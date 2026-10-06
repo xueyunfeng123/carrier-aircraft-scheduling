@@ -10,10 +10,26 @@ from solution.cp_sat_repair_model import RepairControl
 
 
 CONTROL_FEATURE_DIM = 13
+CONTROL_FEATURE_NAMES = (
+    "normalized_time",
+    "wave_launch_progress",
+    "normalized_time_to_deadline",
+    "pending_recovery_ratio",
+    "candidate_action_ratio",
+    "active_disruption_ratio",
+    "unavailable_service_ratio",
+    "closed_runway_ratio",
+    "unavailable_aircraft_ratio",
+    "service_slowdown_excess",
+    "minimum_service_capacity_ratio",
+    "launch_capacity_ratio",
+    "blocked_failure_slot_ratio",
+)
 CONTROL_SCOPES = ("current_wave", "two_waves", "affected")
 CONTROL_BUDGETS_MS = (10.0, 50.0, 200.0)
 CONTROL_NEIGHBORHOODS = (8, 16, 32)
 REPAIR_CONTROL_CHECKPOINT_TYPE = "repair_control_policy"
+REPAIR_CONTROL_SCHEMA_VERSION = 1
 
 
 def encode_repair_control_state(
@@ -83,8 +99,14 @@ def encode_repair_control_state(
 class RuleBasedRepairController:
     """Deterministic event trigger used when no learned control is loaded."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        max_budget_ms: Optional[float] = None,
+        max_neighborhood_size: Optional[int] = None,
+    ):
         self.last_signature: Optional[Tuple[Any, ...]] = None
+        self.max_budget_ms = max_budget_ms
+        self.max_neighborhood_size = max_neighborhood_size
 
     def __call__(
         self,
@@ -130,8 +152,16 @@ class RuleBasedRepairController:
         return RepairControl(
             trigger=trigger,
             scope=scope,
-            budget_ms=budget_ms,
-            neighborhood_size=neighborhood,
+            budget_ms=(
+                min(budget_ms, self.max_budget_ms)
+                if self.max_budget_ms is not None
+                else budget_ms
+            ),
+            neighborhood_size=(
+                min(neighborhood, self.max_neighborhood_size)
+                if self.max_neighborhood_size is not None
+                else neighborhood
+            ),
             horizon_waves=(
                 1 if scope == "current_wave" else 2
             ),
@@ -206,6 +236,8 @@ class LearnedRepairController:
         self,
         checkpoint: str,
         device: str = "cpu",
+        max_budget_ms: Optional[float] = None,
+        max_neighborhood_size: Optional[int] = None,
     ):
         try:
             import torch
@@ -227,6 +259,30 @@ class LearnedRepairController:
             raise ValueError(
                 "checkpoint is not a repair control policy"
             )
+        if (
+            int(extra.get("control_dataset_schema_version", -1))
+            != REPAIR_CONTROL_SCHEMA_VERSION
+        ):
+            raise ValueError(
+                "repair control checkpoint schema is incompatible"
+            )
+        if tuple(extra.get("feature_names", ())) != tuple(
+            CONTROL_FEATURE_NAMES
+        ):
+            raise ValueError(
+                "repair control checkpoint feature order is incompatible"
+            )
+        expected_categories = {
+            "scopes": list(CONTROL_SCOPES),
+            "budgets_ms": list(CONTROL_BUDGETS_MS),
+            "neighborhoods": list(CONTROL_NEIGHBORHOODS),
+        }
+        for key, expected in expected_categories.items():
+            if list(extra.get(key, ())) != expected:
+                raise ValueError(
+                    "repair control checkpoint categories are "
+                    f"incompatible: {key}"
+                )
         hidden_dim = int(
             payload.get("model_config", {}).get(
                 "hidden_dim",
@@ -238,6 +294,8 @@ class LearnedRepairController:
         self.model.eval()
         self.device = device
         self.torch = torch
+        self.max_budget_ms = max_budget_ms
+        self.max_neighborhood_size = max_neighborhood_size
 
     def __call__(
         self,
@@ -258,10 +316,22 @@ class LearnedRepairController:
         return RepairControl(
             trigger=bool(trigger_index),
             scope=scope,
-            budget_ms=CONTROL_BUDGETS_MS[budget_index],
-            neighborhood_size=CONTROL_NEIGHBORHOODS[
-                neighborhood_index
-            ],
+            budget_ms=(
+                min(
+                    CONTROL_BUDGETS_MS[budget_index],
+                    self.max_budget_ms,
+                )
+                if self.max_budget_ms is not None
+                else CONTROL_BUDGETS_MS[budget_index]
+            ),
+            neighborhood_size=(
+                min(
+                    CONTROL_NEIGHBORHOODS[neighborhood_index],
+                    self.max_neighborhood_size,
+                )
+                if self.max_neighborhood_size is not None
+                else CONTROL_NEIGHBORHOODS[neighborhood_index]
+            ),
             horizon_waves=(
                 1 if scope == "current_wave" else 2
             ),

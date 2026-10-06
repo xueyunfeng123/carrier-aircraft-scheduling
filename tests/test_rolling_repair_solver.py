@@ -55,6 +55,49 @@ class RollingRepairSolverTest(unittest.TestCase):
         telemetry = solver.get_telemetry()
         self.assertEqual(telemetry["solve_calls"], 1)
         self.assertEqual(telemetry["fallbacks"], 0)
+        decision = solver.get_decision_records()[0]
+        self.assertEqual(decision["source"], "repair")
+        self.assertEqual(decision["budget_ms"], 500.0)
+        self.assertGreaterEqual(decision["latency_ms"], 0.0)
+        self.assertIn("normalized_time", decision)
+
+    def test_repair_scope_limits_current_wave_neighborhood(
+        self,
+    ) -> None:
+        env = self._service_env()
+        for aircraft in env.aircraft:
+            aircraft.inspection_status = 0
+            aircraft.launch_status = 0
+        env._invalidate_planning_cache()
+        model = CPSATRepairModel(env)
+
+        current = model._planning_tasks(
+            RepairControl(
+                scope="current_wave",
+                horizon_waves=1,
+                budget_ms=50.0,
+                neighborhood_size=4,
+            ),
+            {},
+        )
+        two_waves = model._planning_tasks(
+            RepairControl(
+                scope="two_waves",
+                horizon_waves=2,
+                budget_ms=50.0,
+                neighborhood_size=4,
+            ),
+            {},
+        )
+
+        self.assertLessEqual(
+            len({task.action_key[1] for task in current}),
+            env.group_size,
+        )
+        self.assertGreater(
+            len({task.action_key[1] for task in two_waves}),
+            len({task.action_key[1] for task in current}),
+        )
 
     def test_zero_budget_uses_incumbent_fallback(self) -> None:
         env = self._service_env()

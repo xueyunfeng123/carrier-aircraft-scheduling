@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from env.config import DEFAULT_CONFIG
+from env.disruptions import PROFILE_SETTINGS
 from scripts.evaluation_defaults import (
     DEFAULT_EVALUATION_RUNS,
     DEFAULT_EVALUATION_SEED,
@@ -74,7 +75,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--disruption-profile",
-        choices=("none", "light", "medium", "heavy"),
+        choices=tuple(PROFILE_SETTINGS),
         default=DEFAULT_CONFIG["disruption_profile"],
     )
     parser.add_argument("--max-steps", type=int, default=100000)
