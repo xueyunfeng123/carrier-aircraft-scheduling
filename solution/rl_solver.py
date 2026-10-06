@@ -13,6 +13,7 @@ from rl.obs_encoder import (
     TARGET_AUX_FEATURE_DIM,
     TARGET_FEATURE_DIM,
     encode_observation,
+    to_torch_batch,
 )
 
 
@@ -111,3 +112,41 @@ class RLSolver:
         action.pop("_target_mask", None)
         action.pop("_target_aux", None)
         return action
+
+    def action_pair_scores(self) -> Dict[tuple[int, int], float]:
+        """Return masked actor scores for operation-aircraft pairs."""
+
+        encoded = encode_observation(self.env)
+        if not any(encoded.high_mask):
+            return {}
+        batch = to_torch_batch(encoded, self.device)
+        with self.torch.no_grad():
+            high_logits, low_logits, _ = self.model(
+                batch["aircraft"],
+                batch["global"],
+                batch["targets"],
+                batch["low_aux"],
+            )
+        scores: Dict[tuple[int, int], float] = {}
+        for high_level, high_allowed in enumerate(
+            encoded.high_mask
+        ):
+            if not high_allowed:
+                continue
+            low_row = (
+                low_logits[0]
+                if low_logits.ndim == 2
+                else low_logits[0, high_level]
+            )
+            for aircraft_id, low_allowed in enumerate(
+                encoded.low_masks[high_level]
+            ):
+                if not low_allowed:
+                    continue
+                scores[(high_level, aircraft_id)] = float(
+                    (
+                        high_logits[0, high_level]
+                        + low_row[aircraft_id]
+                    ).item()
+                )
+        return scores

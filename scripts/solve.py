@@ -20,18 +20,24 @@ from solution import (
     FIFOSolver,
     RandomSolver,
     RLSolver,
+    RollingRepairSolver,
     SPTSolver,
     WaveHeuristicSolver,
+)
+from solution.hybrid_rescheduling_solver import (
+    HybridReschedulingSolver,
 )
 
 
 SOLVERS: Dict[str, Type] = {
     "cp_sat": CPSATSolver,
+    "cp_sat_repair": RollingRepairSolver,
     "edd": EDDSolver,
     "fifo": FIFOSolver,
     "heuristic": WaveHeuristicSolver,
     "random": RandomSolver,
     "rl": RLSolver,
+    "rl_cp_sat": HybridReschedulingSolver,
     "spt": SPTSolver,
 }
 
@@ -49,7 +55,11 @@ def run_episode(
     solver_options = solver_options or {}
     if solver_name == "random":
         solver = solver_cls(env, seed=seed)
-    elif solver_name == "cp_sat":
+    elif solver_name in (
+        "cp_sat",
+        "cp_sat_repair",
+        "rl_cp_sat",
+    ):
         solver = solver_cls(env, **solver_options)
     elif solver_name == "rl":
         solver = solver_cls(env, **solver_options)
@@ -71,6 +81,11 @@ def run_episode(
             break
 
     metrics = env.get_evaluation_metrics()
+    solver_telemetry = (
+        solver.get_telemetry()
+        if hasattr(solver, "get_telemetry")
+        else {}
+    )
     return {
         "solver": solver_name,
         "scenario_profile": env.scenario_profile.name,
@@ -88,6 +103,7 @@ def run_episode(
         "cbs_replan": metrics["cbs_replan"],
         "disruptions": metrics["disruptions"],
         "scenario_tape": metrics["scenario_tape"],
+        "solver_telemetry": solver_telemetry,
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
         "missed_sortie_records": env.get_missed_sortie_records(),
@@ -251,7 +267,28 @@ def main() -> None:
     parser.add_argument("--missed-csv", type=str, default="")
     parser.add_argument("--event-log-csv", type=str, default="")
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
+    parser.add_argument("--repair-budget-ms", type=float, default=50.0)
+    parser.add_argument(
+        "--repair-neighborhood-size",
+        type=int,
+        default=20,
+    )
+    parser.add_argument(
+        "--repair-horizon-waves",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--repair-scope",
+        choices=("current_wave", "two_waves", "affected"),
+        default="two_waves",
+    )
     parser.add_argument("--checkpoint", type=str, default="")
+    parser.add_argument(
+        "--repair-control-checkpoint",
+        type=str,
+        default="",
+    )
     parser.add_argument("--rl-device", type=str, default="cpu")
     parser.add_argument("--rl-stochastic", action="store_true")
     parser.add_argument("--rl-hidden-dim", type=int, default=128)
@@ -264,6 +301,13 @@ def main() -> None:
         solver_options = {
             "max_time_seconds": args.cp_sat_max_time,
         }
+    elif args.solver == "cp_sat_repair":
+        solver_options = {
+            "budget_ms": args.repair_budget_ms,
+            "neighborhood_size": args.repair_neighborhood_size,
+            "horizon_waves": args.repair_horizon_waves,
+            "scope": args.repair_scope,
+        }
     elif args.solver == "rl":
         solver_options = {
             "checkpoint": args.checkpoint,
@@ -271,6 +315,19 @@ def main() -> None:
             "deterministic": not args.rl_stochastic,
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
+        }
+    elif args.solver == "rl_cp_sat":
+        solver_options = {
+            "checkpoint": args.checkpoint,
+            "device": args.rl_device,
+            "deterministic": not args.rl_stochastic,
+            "control_checkpoint": (
+                args.repair_control_checkpoint
+            ),
+            "budget_ms": args.repair_budget_ms,
+            "neighborhood_size": args.repair_neighborhood_size,
+            "horizon_waves": args.repair_horizon_waves,
+            "scope": args.repair_scope,
         }
     results = [
         run_episode(

@@ -1,0 +1,126 @@
+"""Tests for event-triggered repair control and the hybrid solver."""
+
+from __future__ import annotations
+
+import unittest
+
+from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
+from rl.repair_control import (
+    CONTROL_FEATURE_DIM,
+    RepairControlNet,
+    RuleBasedRepairController,
+    encode_repair_control_state,
+)
+from solution.hybrid_rescheduling_solver import (
+    HybridReschedulingSolver,
+)
+
+
+class RepairControlTest(unittest.TestCase):
+    def test_control_features_hide_future_disruptions(self) -> None:
+        base = self._env(
+            disruption_profile="none",
+            wave_interval=60.0,
+            simulation_duration=720.0,
+        )
+        disrupted = self._env(
+            disruption_profile="heavy",
+            wave_interval=60.0,
+            simulation_duration=720.0,
+        )
+        base.reset(seed=19)
+        disrupted.reset(seed=19)
+
+        self.assertEqual(
+            encode_repair_control_state(base),
+            encode_repair_control_state(disrupted),
+        )
+        self.assertEqual(
+            len(encode_repair_control_state(base)),
+            CONTROL_FEATURE_DIM,
+        )
+
+    def test_rule_controller_triggers_on_event_change(self) -> None:
+        env = self._env(
+            disruptions=[
+                {
+                    "kind": "runway_closure",
+                    "target": 0,
+                    "start_time": 1.0,
+                    "end_time": 3.0,
+                }
+            ]
+        )
+        controller = RuleBasedRepairController()
+
+        initial = controller(env)
+        repeated = controller(env)
+        env._advance_time_to_next_event()
+        disrupted = controller(env)
+
+        self.assertTrue(initial.trigger)
+        self.assertFalse(repeated.trigger)
+        self.assertTrue(disrupted.trigger)
+        self.assertGreater(
+            disrupted.budget_ms,
+            initial.budget_ms,
+        )
+
+    def test_control_network_heads_have_valid_shapes(self) -> None:
+        import torch
+
+        model = RepairControlNet(hidden_dim=16)
+        outputs = model(
+            torch.zeros((2, CONTROL_FEATURE_DIM))
+        )
+
+        self.assertEqual(
+            [tuple(output.shape) for output in outputs],
+            [(2, 2), (2, 3), (2, 3), (2, 3)],
+        )
+
+    def test_hybrid_solver_returns_legal_action(self) -> None:
+        env = self._env()
+        for aircraft in env.aircraft:
+            aircraft.launch_status = 0
+        env.aircraft[0].inspection_status = 0
+        env._invalidate_planning_cache()
+        solver = HybridReschedulingSolver(
+            env,
+            checkpoint="",
+            device="cpu",
+            budget_ms=200.0,
+            neighborhood_size=4,
+        )
+
+        action = solver.choose_action()
+
+        self.assertIsNotNone(action)
+        parsed = env._parse_action(action)
+        self.assertIsNotNone(parsed)
+        self.assertTrue(env._is_action_valid(*parsed))
+        self.assertEqual(
+            solver.get_telemetry()["controller"],
+            "rule",
+        )
+
+    def _env(self, **overrides) -> CarrierAircraftSchedulingEnv:
+        config = {
+            "num_aircraft": 4,
+            "num_total_aircraft": 6,
+            "group_size": 2,
+            "num_parking_spots": 4,
+            "num_launch_positions": 2,
+            "num_launch_channels": 2,
+            "spatial_graph_enabled": False,
+            "wave_interval": 20.0,
+            "simulation_duration": 40.0,
+        }
+        config.update(overrides)
+        env = CarrierAircraftSchedulingEnv(config)
+        env.reset(seed=7)
+        return env
+
+
+if __name__ == "__main__":
+    unittest.main()

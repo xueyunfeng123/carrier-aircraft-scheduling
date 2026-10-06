@@ -1,0 +1,487 @@
+"""Rolling-horizon CP-SAT repair model for deck support dispatching."""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
+from solution.priority_rule_solver import (
+    ACTION_ARM,
+    ACTION_FUEL,
+    ACTION_INSPECTION,
+    PriorityRuleSolver,
+)
+
+
+ActionKey = Tuple[int, int]
+
+
+@dataclass(frozen=True)
+class RepairControl:
+    """One online repair decision supplied by a baseline or controller."""
+
+    trigger: bool = True
+    scope: str = "two_waves"
+    budget_ms: float = 50.0
+    neighborhood_size: int = 20
+    horizon_waves: int = 2
+
+    def __post_init__(self) -> None:
+        if self.scope not in {
+            "current_wave",
+            "two_waves",
+            "affected",
+        }:
+            raise ValueError(f"unsupported repair scope: {self.scope}")
+        if self.budget_ms < 0.0:
+            raise ValueError("repair budget must be non-negative")
+        if self.neighborhood_size < 1:
+            raise ValueError("repair neighborhood must be positive")
+        if self.horizon_waves < 1:
+            raise ValueError("repair horizon must be positive")
+
+
+@dataclass(frozen=True)
+class PlanningTask:
+    action_key: ActionKey
+    duration_ticks: int
+    priority: int
+
+
+@dataclass
+class RepairPlan:
+    snapshot_id: Tuple[Any, ...]
+    status: str
+    actions: List[ActionKey] = field(default_factory=list)
+    immediate_actions: List[ActionKey] = field(default_factory=list)
+    start_ticks: Dict[ActionKey, int] = field(default_factory=dict)
+    objective: Optional[float] = None
+    best_bound: Optional[float] = None
+    runtime_ms: float = 0.0
+    solve_ms: float = 0.0
+    deadline_missed: bool = False
+
+
+def planning_snapshot_id(
+    env: CarrierAircraftSchedulingEnv,
+) -> Tuple[Any, ...]:
+    active_disruptions = tuple(
+        sorted(
+            (
+                spec.kind,
+                str(spec.target),
+                int(spec.disruption_id),
+            )
+            for spec in env.active_disruptions.values()
+        )
+    )
+    return (
+        round(float(env.time), 9),
+        int(env.current_wave_index),
+        int(env.event_sequence),
+        active_disruptions,
+    )
+
+
+class CPSATRepairModel:
+    """Build and solve an expected-duration rolling service schedule."""
+
+    def __init__(
+        self,
+        env: CarrierAircraftSchedulingEnv,
+        time_scale: int = 10,
+    ):
+        try:
+            from ortools.sat.python import cp_model
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "OR-Tools is required for rolling CP-SAT repair"
+            ) from exc
+        if time_scale < 1:
+            raise ValueError("time_scale must be positive")
+        self.env = env
+        self.cp_model = cp_model
+        self.time_scale = int(time_scale)
+        self.priority = PriorityRuleSolver(env, "edd")
+
+    def solve(
+        self,
+        control: RepairControl,
+        incumbent_starts: Optional[Mapping[ActionKey, int]] = None,
+        guidance_scores: Optional[Mapping[ActionKey, float]] = None,
+    ) -> RepairPlan:
+        started = time.perf_counter()
+        snapshot_id = planning_snapshot_id(self.env)
+        if not control.trigger or control.budget_ms <= 0.0:
+            return RepairPlan(
+                snapshot_id=snapshot_id,
+                status="skipped",
+                runtime_ms=(time.perf_counter() - started) * 1000.0,
+            )
+
+        tasks = self._planning_tasks(
+            control,
+            guidance_scores or {},
+        )
+        if not tasks:
+            return RepairPlan(
+                snapshot_id=snapshot_id,
+                status="empty",
+                runtime_ms=(time.perf_counter() - started) * 1000.0,
+            )
+
+        model = self.cp_model.CpModel()
+        horizon_ticks = self._ticks(
+            control.horizon_waves * self.env.wave_interval
+        )
+        max_end = horizon_ticks + sum(
+            task.duration_ticks for task in tasks
+        )
+        deadline_ticks = self._ticks(
+            max(
+                0.0,
+                min(
+                    (
+                        self.env.current_wave_index + 1
+                    )
+                    * self.env.wave_interval,
+                    self.env.simulation_duration,
+                )
+                - self.env.time,
+            )
+        )
+        starts: Dict[ActionKey, Any] = {}
+        ends: Dict[ActionKey, Any] = {}
+        intervals_by_resource: Dict[str, List[Any]] = {
+            "fuel": [],
+            "inspection": [],
+            "arm": [],
+            "ammo_transport": [],
+            "lower_lift": [],
+            "upper_lift": [],
+            "personnel": [],
+        }
+        personnel_demands: List[int] = []
+        objective_terms = []
+        incumbent_starts = dict(incumbent_starts or {})
+
+        for task in tasks:
+            action, aircraft_id = task.action_key
+            name = f"{action}_{aircraft_id}"
+            start = model.NewIntVar(0, max_end, f"start_{name}")
+            end = model.NewIntVar(0, max_end, f"end_{name}")
+            starts[task.action_key] = start
+            ends[task.action_key] = end
+
+            if action == ACTION_ARM:
+                stage_one = self._arm_stage_one_ticks()
+                stage_two = max(1, task.duration_ticks - stage_one)
+                stage_one_end = model.NewIntVar(
+                    0,
+                    max_end,
+                    f"stage_one_end_{name}",
+                )
+                model.Add(stage_one_end == start + stage_one)
+                model.Add(end == stage_one_end + stage_two)
+                full_interval = model.NewIntervalVar(
+                    start,
+                    task.duration_ticks,
+                    end,
+                    f"arm_full_{name}",
+                )
+                lower_interval = model.NewIntervalVar(
+                    start,
+                    stage_one,
+                    stage_one_end,
+                    f"arm_lower_{name}",
+                )
+                upper_interval = model.NewIntervalVar(
+                    stage_one_end,
+                    stage_two,
+                    end,
+                    f"arm_upper_{name}",
+                )
+                intervals_by_resource["arm"].append(full_interval)
+                intervals_by_resource["ammo_transport"].append(
+                    lower_interval
+                )
+                intervals_by_resource["lower_lift"].append(
+                    lower_interval
+                )
+                intervals_by_resource["upper_lift"].append(
+                    upper_interval
+                )
+                personnel_interval = full_interval
+                personnel_demand = int(
+                    self.env.config["arm_personnel_required"]
+                )
+            else:
+                interval = model.NewIntervalVar(
+                    start,
+                    task.duration_ticks,
+                    end,
+                    f"service_{name}",
+                )
+                resource = (
+                    "fuel"
+                    if action == ACTION_FUEL
+                    else "inspection"
+                )
+                intervals_by_resource[resource].append(interval)
+                personnel_interval = interval
+                personnel_demand = int(
+                    self.env.config[
+                        (
+                            "fuel_personnel_required"
+                            if action == ACTION_FUEL
+                            else "inspection_personnel_required"
+                        )
+                    ]
+                )
+
+            if bool(
+                self.env.config["personnel_scheduling_enabled"]
+            ):
+                intervals_by_resource["personnel"].append(
+                    personnel_interval
+                )
+                personnel_demands.append(personnel_demand)
+
+            old_start = incumbent_starts.get(task.action_key)
+            if old_start is not None:
+                clipped = min(max_end, max(0, int(old_start)))
+                model.AddHint(start, clipped)
+                deviation = model.NewIntVar(
+                    0,
+                    max_end,
+                    f"deviation_{name}",
+                )
+                model.AddAbsEquality(deviation, start - clipped)
+                objective_terms.append(-10 * deviation)
+            objective_terms.append(-task.priority * end)
+
+        capacities = self.env.get_state()["resources"]
+        self._add_cumulative(
+            model,
+            intervals_by_resource["fuel"],
+            int(capacities["fuel_servers"]),
+        )
+        self._add_cumulative(
+            model,
+            intervals_by_resource["inspection"],
+            int(capacities["inspection_vehicles"]),
+        )
+        self._add_cumulative(
+            model,
+            intervals_by_resource["arm"],
+            int(capacities["arm_vehicles"]),
+        )
+        self._add_cumulative(
+            model,
+            intervals_by_resource["ammo_transport"],
+            int(capacities["ammo_transport_vehicles"]),
+        )
+        self._add_cumulative(
+            model,
+            intervals_by_resource["lower_lift"],
+            int(capacities["lower_weapon_lifts"]),
+        )
+        self._add_cumulative(
+            model,
+            intervals_by_resource["upper_lift"],
+            int(capacities["upper_weapon_lifts"]),
+        )
+        if intervals_by_resource["personnel"]:
+            capacity = int(capacities["personnel"])
+            model.AddCumulative(
+                intervals_by_resource["personnel"],
+                personnel_demands,
+                max(0, capacity),
+            )
+
+        task_keys_by_aircraft: Dict[int, List[ActionKey]] = {}
+        for task in tasks:
+            task_keys_by_aircraft.setdefault(
+                task.action_key[1],
+                [],
+            ).append(task.action_key)
+        sortie_weight = 1_000_000
+        for aircraft_id, action_keys in task_keys_by_aircraft.items():
+            completion = model.NewIntVar(
+                0,
+                max_end,
+                f"completion_{aircraft_id}",
+            )
+            model.AddMaxEquality(
+                completion,
+                [ends[action_key] for action_key in action_keys],
+            )
+            ready = model.NewBoolVar(f"ready_{aircraft_id}")
+            model.Add(completion <= deadline_ticks).OnlyEnforceIf(
+                ready
+            )
+            model.Add(completion > deadline_ticks).OnlyEnforceIf(
+                ready.Not()
+            )
+            objective_terms.append(sortie_weight * ready)
+
+        model.Maximize(sum(objective_terms))
+        build_ms = (time.perf_counter() - started) * 1000.0
+        remaining_seconds = max(
+            0.001,
+            (control.budget_ms - build_ms) / 1000.0,
+        )
+        solver = self.cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = remaining_seconds
+        solver.parameters.num_search_workers = 1
+        solve_started = time.perf_counter()
+        status = solver.Solve(model)
+        solve_ms = (time.perf_counter() - solve_started) * 1000.0
+        runtime_ms = (time.perf_counter() - started) * 1000.0
+
+        valid_statuses = {
+            self.cp_model.OPTIMAL,
+            self.cp_model.FEASIBLE,
+        }
+        if status not in valid_statuses:
+            return RepairPlan(
+                snapshot_id=snapshot_id,
+                status=solver.StatusName(status).lower(),
+                runtime_ms=runtime_ms,
+                solve_ms=solve_ms,
+                deadline_missed=runtime_ms > control.budget_ms,
+            )
+
+        start_ticks = {
+            action_key: int(solver.Value(variable))
+            for action_key, variable in starts.items()
+        }
+        actions = sorted(
+            start_ticks,
+            key=lambda action_key: (
+                start_ticks[action_key],
+                action_key[0],
+                action_key[1],
+            ),
+        )
+        immediate = [
+            action_key
+            for action_key in actions
+            if start_ticks[action_key] == 0
+        ]
+        return RepairPlan(
+            snapshot_id=snapshot_id,
+            status=solver.StatusName(status).lower(),
+            actions=actions,
+            immediate_actions=immediate,
+            start_ticks=start_ticks,
+            objective=float(solver.ObjectiveValue()),
+            best_bound=float(solver.BestObjectiveBound()),
+            runtime_ms=runtime_ms,
+            solve_ms=solve_ms,
+            deadline_missed=runtime_ms > control.budget_ms,
+        )
+
+    def _planning_tasks(
+        self,
+        control: RepairControl,
+        guidance_scores: Mapping[ActionKey, float],
+    ) -> List[PlanningTask]:
+        mask = self.env.get_action_mask()
+        candidates = [
+            (action, aircraft_id)
+            for action in (
+                ACTION_FUEL,
+                ACTION_INSPECTION,
+                ACTION_ARM,
+            )
+            if mask["high_level"][action]
+            for aircraft_id, allowed in enumerate(
+                mask["low_level_by_high"][action]
+            )
+            if allowed
+        ]
+        affected = set(self.env.unavailable_aircraft_ids)
+        ranked_aircraft = sorted(
+            {aircraft_id for _, aircraft_id in candidates},
+            key=lambda aircraft_id: (
+                0 if aircraft_id in affected else 1,
+                self.priority._launch_deadline(aircraft_id),
+                min(
+                    self.priority._expected_action_duration(
+                        action,
+                        aircraft_id,
+                    )
+                    for action, candidate_id in candidates
+                    if candidate_id == aircraft_id
+                ),
+                aircraft_id,
+            ),
+        )
+        selected_aircraft = set(
+            ranked_aircraft[: control.neighborhood_size]
+        )
+        tasks = []
+        for action_key in candidates:
+            action, aircraft_id = action_key
+            if aircraft_id not in selected_aircraft:
+                continue
+            duration = self.priority._expected_action_duration(
+                action,
+                aircraft_id,
+            )
+            if not math.isfinite(duration):
+                continue
+            guidance = float(guidance_scores.get(action_key, 0.0))
+            urgency = max(
+                1,
+                int(
+                    round(
+                        1000.0
+                        + 100.0 * guidance
+                        + max(
+                            0.0,
+                            self.env.wave_interval - duration,
+                        )
+                    )
+                ),
+            )
+            tasks.append(
+                PlanningTask(
+                    action_key=action_key,
+                    duration_ticks=self._ticks(duration),
+                    priority=urgency,
+                )
+            )
+        return tasks
+
+    def _arm_stage_one_ticks(self) -> int:
+        duration = (
+            (
+                float(self.env.config["ammo_extract_time_min"])
+                + float(self.env.config["ammo_extract_time_max"])
+            )
+            / 2.0
+            + float(self.env.config["lower_lift_time_mean"])
+        )
+        return self._ticks(duration)
+
+    def _ticks(self, duration: float) -> int:
+        return max(1, int(math.ceil(duration * self.time_scale)))
+
+    @staticmethod
+    def _add_cumulative(model, intervals: List[Any], capacity: int) -> None:
+        if not intervals:
+            return
+        if capacity <= 0:
+            raise ValueError(
+                "repair model received work for an unavailable resource"
+            )
+        model.AddCumulative(
+            intervals,
+            [1] * len(intervals),
+            capacity,
+        )

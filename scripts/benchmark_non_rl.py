@@ -19,7 +19,15 @@ from scripts.evaluation_defaults import (
 from scripts.solve import run_episode
 
 
-NON_RL_SOLVERS = ("random", "fifo", "spt", "edd", "heuristic", "cp_sat")
+NON_RL_SOLVERS = (
+    "random",
+    "fifo",
+    "spt",
+    "edd",
+    "heuristic",
+    "cp_sat",
+    "cp_sat_repair",
+)
 
 
 def main() -> None:
@@ -34,6 +42,12 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--seed", type=int, default=DEFAULT_EVALUATION_SEED)
     parser.add_argument("--cp-sat-max-time", type=float, default=0.05)
+    parser.add_argument("--repair-budget-ms", type=float, default=50.0)
+    parser.add_argument(
+        "--repair-neighborhood-size",
+        type=int,
+        default=20,
+    )
     parser.add_argument(
         "--solvers",
         nargs="+",
@@ -100,6 +114,13 @@ def main() -> None:
             options: Dict[str, Any] = {}
             if solver_name == "cp_sat":
                 options["max_time_seconds"] = args.cp_sat_max_time
+            elif solver_name == "cp_sat_repair":
+                options = {
+                    "budget_ms": args.repair_budget_ms,
+                    "neighborhood_size": (
+                        args.repair_neighborhood_size
+                    ),
+                }
             elif solver_name == "rl":
                 options = {
                     "checkpoint": args.rl_checkpoint,
@@ -170,6 +191,15 @@ def main() -> None:
                         ],
                         "worst_wave": min(wave_counts),
                         "runtime_seconds": runtimes[-1],
+                        "decision_latency_p95_ms": result[
+                            "solver_telemetry"
+                        ].get("latency_p95_ms", 0.0),
+                        "deadline_misses": result[
+                            "solver_telemetry"
+                        ].get("deadline_misses", 0),
+                        "fallbacks": result[
+                            "solver_telemetry"
+                        ].get("fallbacks", 0),
                         "wave_sorties": ";".join(
                             str(value)
                             for value in wave_counts

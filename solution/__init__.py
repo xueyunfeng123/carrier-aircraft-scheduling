@@ -5,6 +5,7 @@ from solution.heuristic_solver import WaveHeuristicSolver
 from solution.priority_rule_solver import EDDSolver, FIFOSolver, SPTSolver
 from solution.random_solver import RandomSolver
 from solution.rl_solver import RLSolver
+from solution.rolling_repair_solver import RollingRepairSolver
 
 __all__ = [
     "CPSATSolver",
@@ -12,6 +13,7 @@ __all__ = [
     "FIFOSolver",
     "RandomSolver",
     "RLSolver",
+    "RollingRepairSolver",
     "SPTSolver",
     "WaveHeuristicSolver",
 ]
