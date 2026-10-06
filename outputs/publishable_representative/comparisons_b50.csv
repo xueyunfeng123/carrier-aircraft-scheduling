@@ -1,0 +1,10 @@
+profile,candidate,reference,pairs,scenario_cells,candidate_mean,reference_mean,mean_delta,ci_low,ci_high,wins,ties,losses,sign_test_p,holm_adjusted_p
+compound_heavy,rl_cp_sat_b50,heuristic,1,1,76.0,77.0,-1.0,-1.0,-1.0,0,0,1,1.0,1.0
+none,rl_cp_sat_b50,heuristic,1,1,80.0,80.0,0.0,0.0,0.0,0,1,0,1.0,1.0
+all,rl_cp_sat_b50,heuristic,1,2,78.0,78.5,-0.5,-0.5,-0.5,0,0,1,1.0,1.0
+compound_heavy,rl_cp_sat_b50,cp_sat_repair_b50,1,1,76.0,76.0,0.0,0.0,0.0,0,1,0,1.0,1.0
+none,rl_cp_sat_b50,cp_sat_repair_b50,1,1,80.0,80.0,0.0,0.0,0.0,0,1,0,1.0,1.0
+all,rl_cp_sat_b50,cp_sat_repair_b50,1,2,78.0,78.0,0.0,0.0,0.0,0,1,0,1.0,1.0
+compound_heavy,rl_cp_sat_b50,event_cp_sat_repair_b50,1,1,76.0,77.0,-1.0,-1.0,-1.0,0,0,1,1.0,1.0
+none,rl_cp_sat_b50,event_cp_sat_repair_b50,1,1,80.0,80.0,0.0,0.0,0.0,0,1,0,1.0,1.0
+all,rl_cp_sat_b50,event_cp_sat_repair_b50,1,2,78.0,78.5,-0.5,-0.5,-0.5,0,0,1,1.0,1.0
