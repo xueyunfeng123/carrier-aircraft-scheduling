@@ -37,6 +37,8 @@ DEFAULT_SOLVERS = (
     "heuristic",
     "cp_sat_repair",
     "event_cp_sat_repair",
+    "rl_fallback_cp_sat",
+    "rl_guided_cp_sat",
     "rl_cp_sat",
 )
 
@@ -48,6 +50,8 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
             "cp_sat_repair",
             "event_cp_sat_repair",
             "rl_cp_sat",
+            "rl_fallback_cp_sat",
+            "rl_guided_cp_sat",
         }:
             for budget_ms in args.budgets_ms:
                 options: Dict[str, Any] = {
@@ -56,7 +60,11 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
                     "horizon_waves": args.horizon_waves,
                     "scope": args.scope,
                 }
-                if solver == "rl_cp_sat":
+                if solver in {
+                    "rl_cp_sat",
+                    "rl_fallback_cp_sat",
+                    "rl_guided_cp_sat",
+                }:
                     options.update(
                         {
                             "checkpoint": args.rl_checkpoint,
@@ -600,7 +608,13 @@ def main() -> None:
     if any(value <= 0.0 for value in args.budgets_ms):
         parser.error("--budgets-ms must be positive")
     if any(
-        solver in {"rl", "rl_cp_sat"}
+        solver
+        in {
+            "rl",
+            "rl_cp_sat",
+            "rl_fallback_cp_sat",
+            "rl_guided_cp_sat",
+        }
         for solver in args.solvers
     ) and not Path(args.rl_checkpoint).is_file():
         parser.error(
@@ -628,7 +642,13 @@ def main() -> None:
     provenance = repository_provenance()
     checkpoint_paths = []
     if any(
-        solver in {"rl", "rl_cp_sat"}
+        solver
+        in {
+            "rl",
+            "rl_cp_sat",
+            "rl_fallback_cp_sat",
+            "rl_guided_cp_sat",
+        }
         for solver in args.solvers
     ):
         checkpoint_paths.append(args.rl_checkpoint)

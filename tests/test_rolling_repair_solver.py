@@ -13,6 +13,29 @@ from solution.rolling_repair_solver import RollingRepairSolver
 
 
 class RollingRepairSolverTest(unittest.TestCase):
+    def test_guidance_is_bounded_and_shift_invariant(self) -> None:
+        candidates = [(1, 0), (1, 1), (2, 2)]
+        base = CPSATRepairModel._normalized_guidance(
+            candidates,
+            {
+                (1, 0): -20.0,
+                (1, 1): 5.0,
+                (2, 2): 100.0,
+            },
+        )
+        shifted = CPSATRepairModel._normalized_guidance(
+            candidates,
+            {
+                (1, 0): 980.0,
+                (1, 1): 1005.0,
+                (2, 2): 1100.0,
+            },
+        )
+
+        self.assertEqual(base, shifted)
+        self.assertEqual(base[(1, 0)], -1.0)
+        self.assertEqual(base[(2, 2)], 1.0)
+
     def test_model_respects_single_fuel_vehicle_capacity(self) -> None:
         env = self._service_env(num_fuel_servers=1)
         for aircraft_id in (0, 1):

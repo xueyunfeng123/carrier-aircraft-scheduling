@@ -125,6 +125,8 @@ class RollingRepairSolver:
         self.incumbent_starts: Dict[ActionKey, int] = {}
         self.cached_actions: List[ActionKey] = []
         self.cached_time: Optional[float] = None
+        self.control_signature: Optional[tuple[Any, ...]] = None
+        self.pending_control: Optional[RepairControl] = None
 
     def choose_action(self) -> Optional[Dict[str, Any]]:
         started = time.perf_counter()
@@ -142,6 +144,7 @@ class RollingRepairSolver:
             )
             return cached
 
+        self._refresh_pending_control()
         fallback = self.fallback_solver.choose_action()
         if fallback is None:
             self._record_latency(
@@ -162,11 +165,19 @@ class RollingRepairSolver:
             )
             return fallback
 
-        control = (
-            self.control_provider(self.env)
-            if self.control_provider is not None
-            else self.default_control
-        )
+        if self.control_provider is not None:
+            control = self.pending_control or RepairControl(
+                trigger=False,
+                scope=self.default_control.scope,
+                budget_ms=self.default_control.budget_ms,
+                neighborhood_size=(
+                    self.default_control.neighborhood_size
+                ),
+                horizon_waves=self.default_control.horizon_waves,
+            )
+            self.pending_control = None
+        else:
+            control = self.default_control
         if not control.trigger or control.budget_ms <= 0.0:
             self.telemetry.fallbacks += 1
             self._record_latency(
@@ -279,6 +290,17 @@ class RollingRepairSolver:
                 )
             ),
         }
+
+    def _refresh_pending_control(self) -> None:
+        if self.control_provider is None:
+            return
+        from rl.repair_control import repair_event_signature
+
+        signature = repair_event_signature(self.env)
+        if signature == self.control_signature:
+            return
+        self.control_signature = signature
+        self.pending_control = self.control_provider(self.env)
 
     def _record_latency(
         self,

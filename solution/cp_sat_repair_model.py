@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from solution.priority_rule_solver import (
@@ -166,6 +166,7 @@ class CPSATRepairModel:
         }
         personnel_demands: List[int] = []
         objective_terms = []
+        secondary_objective_bound = 0
         incumbent_starts = dict(incumbent_starts or {})
 
         for task in tasks:
@@ -261,7 +262,9 @@ class CPSATRepairModel:
                 )
                 model.AddAbsEquality(deviation, start - clipped)
                 objective_terms.append(-10 * deviation)
+                secondary_objective_bound += 10 * max_end
             objective_terms.append(-task.priority * end)
+            secondary_objective_bound += task.priority * max_end
 
         self._add_active_resource_occupancy(
             model,
@@ -314,7 +317,7 @@ class CPSATRepairModel:
                 task.action_key[1],
                 [],
             ).append(task.action_key)
-        sortie_weight = 1_000_000
+        sortie_weight = secondary_objective_bound + 1
         for aircraft_id, action_keys in task_keys_by_aircraft.items():
             completion = model.NewIntVar(
                 0,
@@ -452,6 +455,10 @@ class CPSATRepairModel:
                     for action_key in candidates
                     if action_key in affected_actions
                 ]
+        normalized_guidance = self._normalized_guidance(
+            candidates,
+            guidance_scores,
+        )
         affected = set(self.env.unavailable_aircraft_ids)
         ranked_aircraft = sorted(
             {aircraft_id for _, aircraft_id in candidates},
@@ -496,17 +503,13 @@ class CPSATRepairModel:
             )
             if not math.isfinite(duration):
                 continue
-            guidance = float(guidance_scores.get(action_key, 0.0))
+            guidance = normalized_guidance.get(action_key, 0.0)
             urgency = max(
                 1,
                 int(
                     round(
                         1000.0
                         + 100.0 * guidance
-                        + max(
-                            0.0,
-                            self.env.wave_interval - duration,
-                        )
                     )
                 ),
             )
@@ -518,6 +521,34 @@ class CPSATRepairModel:
                 )
             )
         return tasks
+
+    @staticmethod
+    def _normalized_guidance(
+        candidates: Sequence[ActionKey],
+        guidance_scores: Mapping[ActionKey, float],
+    ) -> Dict[ActionKey, float]:
+        scored = {
+            action_key: float(guidance_scores[action_key])
+            for action_key in candidates
+            if action_key in guidance_scores
+            and math.isfinite(float(guidance_scores[action_key]))
+        }
+        unique = sorted(set(scored.values()))
+        if not unique:
+            return {}
+        if len(unique) == 1:
+            return {
+                action_key: 0.0
+                for action_key in scored
+            }
+        rank_by_value = {
+            value: 2.0 * rank / (len(unique) - 1) - 1.0
+            for rank, value in enumerate(unique)
+        }
+        return {
+            action_key: rank_by_value[value]
+            for action_key, value in scored.items()
+        }
 
     def _resource_capacities(self) -> Dict[str, int]:
         available_service = {

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
-import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
@@ -19,6 +18,7 @@ from rl.repair_control import (
     CONTROL_NEIGHBORHOODS,
     RuleBasedRepairController,
     encode_repair_control_state,
+    repair_event_signature,
 )
 from rl.checkpoint import load_checkpoint
 from scripts.evaluation_protocol import (
@@ -28,7 +28,7 @@ from scripts.evaluation_protocol import (
     validate_phase_seeds,
     write_csv,
 )
-from solution.cp_sat_repair_model import RepairControl
+from solution.cp_sat_repair_model import ActionKey, RepairControl
 from solution.rl_solver import RLSolver
 from solution.rolling_repair_solver import RollingRepairSolver
 
@@ -47,11 +47,17 @@ class OracleOutcome:
             float(self.sorties),
             -float(self.missed),
             -float(self.deadline_misses),
-            -float(self.runtime_ms),
             -float(self.control.trigger),
             -float(self.control.budget_ms),
             -float(self.control.neighborhood_size),
+            -float(self.runtime_ms),
         )
+
+
+@dataclass
+class OracleSnapshot:
+    env: CarrierAircraftSchedulingEnv
+    incumbent_starts: Dict[ActionKey, int]
 
 
 class ForcedThenRuleController:
@@ -82,13 +88,18 @@ class SnapshotCollectorController:
     def __init__(self, max_samples: int):
         self.max_samples = max_samples
         self.reference = RuleBasedRepairController()
-        self.snapshots: List[CarrierAircraftSchedulingEnv] = []
+        self.snapshots: List[OracleSnapshot] = []
         self.seen = set()
+        self.last_signature = None
+        self.solver: RollingRepairSolver | None = None
 
     def __call__(
         self,
         env: CarrierAircraftSchedulingEnv,
     ) -> RepairControl:
+        signature = repair_event_signature(env)
+        event_changed = self.last_signature != signature
+        self.last_signature = signature
         features = encode_repair_control_state(env)
         snapshot_key = canonical_json_sha256(
             {
@@ -100,11 +111,23 @@ class SnapshotCollectorController:
             }
         )
         if (
-            len(self.snapshots) < self.max_samples
+            event_changed
+            and len(self.snapshots) < self.max_samples
             and snapshot_key not in self.seen
         ):
+            if self.solver is None:
+                raise RuntimeError(
+                    "snapshot collector is not bound to a solver"
+                )
             self.seen.add(snapshot_key)
-            self.snapshots.append(copy.deepcopy(env))
+            self.snapshots.append(
+                OracleSnapshot(
+                    env=copy.deepcopy(env),
+                    incumbent_starts=dict(
+                        self.solver.incumbent_starts
+                    ),
+                )
+            )
         return self.reference(env)
 
 
@@ -139,7 +162,7 @@ def collect_snapshots(
     device: str,
     max_samples: int,
     max_steps: int,
-) -> List[CarrierAircraftSchedulingEnv]:
+) -> List[OracleSnapshot]:
     env = CarrierAircraftSchedulingEnv(dict(config))
     env.reset(seed=seed)
     actor = RLSolver(
@@ -159,6 +182,7 @@ def collect_snapshots(
         guidance_provider=lambda _: actor.action_pair_scores(),
         fallback_solver=actor,
     )
+    collector.solver = solver
     steps = 0
     while (
         not env.done
@@ -171,13 +195,13 @@ def collect_snapshots(
 
 
 def evaluate_control(
-    snapshot: CarrierAircraftSchedulingEnv,
+    snapshot: OracleSnapshot,
     control: RepairControl,
     checkpoint: str,
     device: str,
     max_steps: int,
 ) -> OracleOutcome:
-    env = copy.deepcopy(snapshot)
+    env = copy.deepcopy(snapshot.env)
     initial_sorties = env.get_evaluation_metrics()[
         "total_sorties_completed"
     ]
@@ -206,7 +230,7 @@ def evaluate_control(
         guidance_provider=lambda _: actor.action_pair_scores(),
         fallback_solver=actor,
     )
-    started = time.perf_counter()
+    solver.incumbent_starts = dict(snapshot.incumbent_starts)
     steps = 0
     while (
         not env.done
@@ -215,9 +239,18 @@ def evaluate_control(
     ):
         env.step(solver.choose_action())
         steps += 1
-    runtime_ms = (time.perf_counter() - started) * 1000.0
     metrics = env.get_evaluation_metrics()
-    telemetry = solver.get_telemetry()
+    decisions = solver.get_decision_records()
+    forced_decision = next(
+        (
+            decision
+            for decision in decisions
+            if decision["trigger"] != ""
+        ),
+        None,
+    )
+    if forced_decision is None:
+        raise RuntimeError("forced oracle control was not evaluated")
     return OracleOutcome(
         control=control,
         sorties=(
@@ -228,8 +261,10 @@ def evaluate_control(
             int(metrics["total_missed_sorties"])
             - int(initial_missed)
         ),
-        deadline_misses=int(telemetry["deadline_misses"]),
-        runtime_ms=runtime_ms,
+        deadline_misses=int(
+            forced_decision["deadline_missed"]
+        ),
+        runtime_ms=float(forced_decision["latency_ms"]),
     )
 
 
@@ -266,36 +301,38 @@ def select_oracle(
 
 
 def build_oracle_row(
-    snapshot: CarrierAircraftSchedulingEnv,
+    snapshot: OracleSnapshot,
     scenario_seed: int,
     sample_index: int,
     outcomes: Sequence[OracleOutcome],
 ) -> Dict[str, Any]:
     best, margin, ties = select_oracle(outcomes)
+    env = snapshot.env
     features = dict(
         zip(
             CONTROL_FEATURE_NAMES,
-            encode_repair_control_state(snapshot),
+            encode_repair_control_state(env),
         )
     )
     return {
         "schema_version": 1,
         "sample_id": (
-            f"{scenario_seed}:{snapshot.time:.9f}:"
-            f"{snapshot.event_sequence}:{sample_index}"
+            f"{scenario_seed}:{env.time:.9f}:"
+            f"{env.event_sequence}:{sample_index}"
         ),
         "scenario_seed": scenario_seed,
-        "profile": snapshot.config["disruption_profile"],
-        "wave_interval": snapshot.wave_interval,
-        "snapshot_time": snapshot.time,
-        "wave_index": snapshot.current_wave_index,
-        "event_sequence": snapshot.event_sequence,
-        "tape_version": snapshot.config[
+        "profile": env.config["disruption_profile"],
+        "wave_interval": env.wave_interval,
+        "snapshot_time": env.time,
+        "wave_index": env.current_wave_index,
+        "event_sequence": env.event_sequence,
+        "incumbent_size": len(snapshot.incumbent_starts),
+        "tape_version": env.config[
             "scenario_tape_version"
         ],
         "tape_sha256": (
-            snapshot.scenario_tape.sha256
-            if snapshot.scenario_tape is not None
+            env.scenario_tape.sha256
+            if env.scenario_tape is not None
             else ""
         ),
         **features,
@@ -311,6 +348,43 @@ def build_oracle_row(
         "tie_count": ties,
         "sample_weight": 1.0 if margin > 0.0 else 0.25,
     }
+
+
+def collect_scenario_rows(
+    task: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    config = dict(task["config"])
+    seed = int(task["seed"])
+    snapshots = collect_snapshots(
+        config,
+        seed,
+        str(task["checkpoint"]),
+        str(task["device"]),
+        int(task["samples_per_scenario"]),
+        int(task["max_steps"]),
+    )
+    controls = candidate_controls()
+    rows = []
+    for sample_index, snapshot in enumerate(snapshots):
+        outcomes = [
+            evaluate_control(
+                snapshot,
+                control,
+                str(task["checkpoint"]),
+                str(task["device"]),
+                int(task["max_steps"]),
+            )
+            for control in controls
+        ]
+        rows.append(
+            build_oracle_row(
+                snapshot,
+                seed,
+                sample_index,
+                outcomes,
+            )
+        )
+    return rows
 
 
 def main() -> None:
@@ -340,6 +414,7 @@ def main() -> None:
     parser.add_argument("--waves", type=int, default=8)
     parser.add_argument("--samples-per-scenario", type=int, default=16)
     parser.add_argument("--max-steps", type=int, default=100000)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument(
         "--checkpoint",
         default="checkpoints/rl_multiload_bc.pt",
@@ -382,9 +457,14 @@ def main() -> None:
     )
     if args.samples_per_scenario < 1:
         parser.error("--samples-per-scenario must be positive")
+    if args.workers < 1:
+        parser.error("--workers must be positive")
+    if args.workers > 1 and args.device != "cpu":
+        parser.error(
+            "parallel oracle workers require --device cpu"
+        )
 
-    rows: List[Dict[str, Any]] = []
-    controls = candidate_controls()
+    tasks: List[Dict[str, Any]] = []
     for profile in args.profiles:
         for interval in args.intervals:
             config = dict(DEFAULT_CONFIG)
@@ -402,38 +482,43 @@ def main() -> None:
                 }
             )
             for seed in seeds:
-                snapshots = collect_snapshots(
-                    config,
-                    seed,
-                    args.checkpoint,
-                    args.device,
-                    args.samples_per_scenario,
-                    args.max_steps,
+                tasks.append(
+                    {
+                        "config": config,
+                        "seed": seed,
+                        "checkpoint": args.checkpoint,
+                        "device": args.device,
+                        "samples_per_scenario": (
+                            args.samples_per_scenario
+                        ),
+                        "max_steps": args.max_steps,
+                    }
                 )
-                for sample_index, snapshot in enumerate(snapshots):
-                    outcomes = [
-                        evaluate_control(
-                            snapshot,
-                            control,
-                            args.checkpoint,
-                            args.device,
-                            args.max_steps,
-                        )
-                        for control in controls
-                    ]
-                    rows.append(
-                        build_oracle_row(
-                            snapshot,
-                            seed,
-                            sample_index,
-                            outcomes,
-                        )
-                    )
-                print(
-                    f"oracle,{profile},{interval:g},{seed},"
-                    f"samples,{len(snapshots)}",
-                    flush=True,
-                )
+    if args.workers == 1:
+        scenario_rows = [
+            collect_scenario_rows(task)
+            for task in tasks
+        ]
+    else:
+        with ProcessPoolExecutor(
+            max_workers=args.workers
+        ) as executor:
+            scenario_rows = list(
+                executor.map(collect_scenario_rows, tasks)
+            )
+    rows = [
+        row
+        for task_rows in scenario_rows
+        for row in task_rows
+    ]
+    rows.sort(key=lambda row: row["sample_id"])
+    for task, task_rows in zip(tasks, scenario_rows):
+        print(
+            f"oracle,{task['config']['disruption_profile']},"
+            f"{task['config']['wave_interval']:g},"
+            f"{task['seed']},samples,{len(task_rows)}",
+            flush=True,
+        )
     write_csv(Path(args.output), rows)
     print(f"oracle_csv_written: {args.output}")
 

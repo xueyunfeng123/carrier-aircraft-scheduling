@@ -65,6 +65,40 @@ class RepairControlTrainingContractTest(unittest.TestCase):
         self.assertEqual(margin, 1.0)
         self.assertEqual(ties, 1)
 
+    def test_oracle_prefers_no_repair_when_quality_ties(
+        self,
+    ) -> None:
+        off = OracleOutcome(
+            control=RepairControl(
+                trigger=False,
+                budget_ms=10.0,
+                neighborhood_size=8,
+            ),
+            sorties=4,
+            missed=0,
+            deadline_misses=0,
+            runtime_ms=5.0,
+        )
+        noisy_fast_repair = OracleOutcome(
+            control=RepairControl(
+                trigger=True,
+                budget_ms=50.0,
+                neighborhood_size=16,
+            ),
+            sorties=4,
+            missed=0,
+            deadline_misses=0,
+            runtime_ms=1.0,
+        )
+
+        best, margin, ties = select_oracle(
+            [noisy_fast_repair, off]
+        )
+
+        self.assertEqual(best, off)
+        self.assertEqual(margin, 0.0)
+        self.assertEqual(ties, 2)
+
     def test_dataset_loader_and_seed_partition(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             train_path = Path(directory) / "train.csv"
@@ -139,9 +173,11 @@ class RepairControlTrainingContractTest(unittest.TestCase):
             env.reset(seed=7)
 
             control = controller(env)
+            repeated = controller(env)
 
             self.assertLessEqual(control.budget_ms, 10.0)
             self.assertLessEqual(control.neighborhood_size, 8)
+            self.assertFalse(repeated.trigger)
             self.assertEqual(
                 provenance["training_seeds"],
                 [30001],

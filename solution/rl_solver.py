@@ -127,6 +127,15 @@ class RLSolver:
                 batch["targets"],
                 batch["low_aux"],
             )
+        high_mask = self.torch.tensor(
+            encoded.high_mask,
+            dtype=self.torch.bool,
+            device=self.device,
+        )
+        high_log_probs = self.torch.log_softmax(
+            high_logits[0].masked_fill(~high_mask, float("-inf")),
+            dim=-1,
+        )
         scores: Dict[tuple[int, int], float] = {}
         for high_level, high_allowed in enumerate(
             encoded.high_mask
@@ -138,6 +147,18 @@ class RLSolver:
                 if low_logits.ndim == 2
                 else low_logits[0, high_level]
             )
+            low_mask = self.torch.tensor(
+                encoded.low_masks[high_level],
+                dtype=self.torch.bool,
+                device=self.device,
+            )
+            low_log_probs = self.torch.log_softmax(
+                low_row.masked_fill(
+                    ~low_mask,
+                    float("-inf"),
+                ),
+                dim=-1,
+            )
             for aircraft_id, low_allowed in enumerate(
                 encoded.low_masks[high_level]
             ):
@@ -145,8 +166,8 @@ class RLSolver:
                     continue
                 scores[(high_level, aircraft_id)] = float(
                     (
-                        high_logits[0, high_level]
-                        + low_row[aircraft_id]
+                        high_log_probs[high_level]
+                        + low_log_probs[aircraft_id]
                     ).item()
                 )
         return scores

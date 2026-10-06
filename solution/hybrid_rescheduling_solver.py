@@ -10,6 +10,7 @@ from rl.repair_control import (
     RuleBasedRepairController,
 )
 from solution.rl_solver import RLSolver
+from solution.heuristic_solver import WaveHeuristicSolver
 from solution.rolling_repair_solver import RollingRepairSolver
 
 
@@ -28,8 +29,16 @@ class HybridReschedulingSolver:
         horizon_waves: int = 2,
         scope: str = "two_waves",
         deterministic: bool = True,
+        fallback_policy: str = "actor",
+        use_actor_guidance: bool = True,
     ):
+        if fallback_policy not in {"actor", "heuristic"}:
+            raise ValueError(
+                f"unsupported hybrid fallback: {fallback_policy}"
+            )
         self.env = env
+        self.fallback_policy = fallback_policy
+        self.use_actor_guidance = bool(use_actor_guidance)
         self.actor = RLSolver(
             env,
             checkpoint=checkpoint,
@@ -56,10 +65,16 @@ class HybridReschedulingSolver:
             horizon_waves=horizon_waves,
             scope=scope,
             control_provider=controller,
-            guidance_provider=lambda _: (
-                self.actor.action_pair_scores()
+            guidance_provider=(
+                (lambda _: self.actor.action_pair_scores())
+                if self.use_actor_guidance
+                else None
             ),
-            fallback_solver=self.actor,
+            fallback_solver=(
+                self.actor
+                if fallback_policy == "actor"
+                else WaveHeuristicSolver(env)
+            ),
         )
 
     def choose_action(self) -> Optional[Dict[str, Any]]:
@@ -75,7 +90,33 @@ class HybridReschedulingSolver:
             )
             else "rule"
         )
+        telemetry["fallback_policy"] = self.fallback_policy
+        telemetry["actor_guidance"] = self.use_actor_guidance
         return telemetry
 
     def get_decision_records(self) -> List[Dict[str, Any]]:
         return self.repair_solver.get_decision_records()
+
+
+class RLGuidedRepairSolver(HybridReschedulingSolver):
+    """Actor guidance with a matched heuristic fallback."""
+
+    def __init__(self, env: CarrierAircraftSchedulingEnv, **kwargs):
+        super().__init__(
+            env,
+            fallback_policy="heuristic",
+            use_actor_guidance=True,
+            **kwargs,
+        )
+
+
+class ActorFallbackRepairSolver(HybridReschedulingSolver):
+    """Actor fallback without actor guidance in the repair objective."""
+
+    def __init__(self, env: CarrierAircraftSchedulingEnv, **kwargs):
+        super().__init__(
+            env,
+            fallback_policy="actor",
+            use_actor_guidance=False,
+            **kwargs,
+        )

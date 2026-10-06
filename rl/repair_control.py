@@ -32,6 +32,31 @@ REPAIR_CONTROL_CHECKPOINT_TYPE = "repair_control_policy"
 REPAIR_CONTROL_SCHEMA_VERSION = 1
 
 
+def repair_event_signature(
+    env: CarrierAircraftSchedulingEnv,
+) -> Tuple[Any, ...]:
+    disruptions = env.get_state()["disruptions"]
+    lifecycle = disruptions["failure_lifecycle"]
+    active = tuple(
+        sorted(
+            (
+                item["kind"],
+                str(item["target"]),
+                int(item["disruption_id"]),
+            )
+            for item in disruptions["active"]
+        )
+    )
+    return (
+        int(env.current_wave_index),
+        active,
+        int(lifecycle["blocked_slots"]),
+        int(lifecycle["hangar_ready"]),
+        int(lifecycle["under_repair"]),
+        int(lifecycle["replacements_in_transit"]),
+    )
+
+
 def encode_repair_control_state(
     env: CarrierAircraftSchedulingEnv,
 ) -> List[float]:
@@ -113,20 +138,7 @@ class RuleBasedRepairController:
         env: CarrierAircraftSchedulingEnv,
     ) -> RepairControl:
         features = encode_repair_control_state(env)
-        active_signature = tuple(
-            sorted(
-                (
-                    item["kind"],
-                    str(item["target"]),
-                    int(item["disruption_id"]),
-                )
-                for item in env.get_state()["disruptions"]["active"]
-            )
-        )
-        signature = (
-            int(env.current_wave_index),
-            active_signature,
-        )
+        signature = repair_event_signature(env)
         trigger = self.last_signature != signature
         self.last_signature = signature
 
@@ -296,11 +308,31 @@ class LearnedRepairController:
         self.torch = torch
         self.max_budget_ms = max_budget_ms
         self.max_neighborhood_size = max_neighborhood_size
+        self.last_signature: Optional[Tuple[Any, ...]] = None
 
     def __call__(
         self,
         env: CarrierAircraftSchedulingEnv,
     ) -> RepairControl:
+        signature = repair_event_signature(env)
+        event_changed = self.last_signature != signature
+        self.last_signature = signature
+        if not event_changed:
+            return RepairControl(
+                trigger=False,
+                scope="two_waves",
+                budget_ms=(
+                    min(50.0, self.max_budget_ms)
+                    if self.max_budget_ms is not None
+                    else 50.0
+                ),
+                neighborhood_size=(
+                    min(16, self.max_neighborhood_size)
+                    if self.max_neighborhood_size is not None
+                    else 16
+                ),
+                horizon_waves=2,
+            )
         features = self.torch.tensor(
             [encode_repair_control_state(env)],
             dtype=self.torch.float32,

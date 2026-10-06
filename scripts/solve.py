@@ -30,7 +30,9 @@ from solution.event_triggered_repair_solver import (
     EventTriggeredRepairSolver,
 )
 from solution.hybrid_rescheduling_solver import (
+    ActorFallbackRepairSolver,
     HybridReschedulingSolver,
+    RLGuidedRepairSolver,
 )
 
 
@@ -44,6 +46,8 @@ SOLVERS: Dict[str, Type] = {
     "random": RandomSolver,
     "rl": RLSolver,
     "rl_cp_sat": HybridReschedulingSolver,
+    "rl_fallback_cp_sat": ActorFallbackRepairSolver,
+    "rl_guided_cp_sat": RLGuidedRepairSolver,
     "spt": SPTSolver,
 }
 
@@ -66,6 +70,8 @@ def run_episode(
         "cp_sat_repair",
         "event_cp_sat_repair",
         "rl_cp_sat",
+        "rl_fallback_cp_sat",
+        "rl_guided_cp_sat",
     ):
         solver = solver_cls(env, **solver_options)
     elif solver_name == "rl":
@@ -398,7 +404,11 @@ def main() -> None:
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
         }
-    elif args.solver == "rl_cp_sat":
+    elif args.solver in (
+        "rl_cp_sat",
+        "rl_fallback_cp_sat",
+        "rl_guided_cp_sat",
+    ):
         solver_options = {
             "checkpoint": args.checkpoint,
             "device": args.rl_device,

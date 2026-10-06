@@ -12,7 +12,9 @@ from rl.repair_control import (
     encode_repair_control_state,
 )
 from solution.hybrid_rescheduling_solver import (
+    ActorFallbackRepairSolver,
     HybridReschedulingSolver,
+    RLGuidedRepairSolver,
 )
 from solution.event_triggered_repair_solver import (
     EventTriggeredRepairSolver,
@@ -154,6 +156,47 @@ class RepairControlTest(unittest.TestCase):
             solver.get_telemetry()["solve_calls"],
             1,
         )
+
+    def test_hybrid_ablation_variants_separate_guidance_and_fallback(
+        self,
+    ) -> None:
+        variants = (
+            (
+                RLGuidedRepairSolver,
+                "heuristic",
+                True,
+            ),
+            (
+                ActorFallbackRepairSolver,
+                "actor",
+                False,
+            ),
+        )
+        for solver_class, fallback, guidance in variants:
+            with self.subTest(solver=solver_class.__name__):
+                env = self._env()
+                solver = solver_class(
+                    env,
+                    checkpoint="",
+                    budget_ms=10.0,
+                    neighborhood_size=4,
+                )
+
+                action = solver.choose_action()
+                telemetry = solver.get_telemetry()
+
+                self.assertIsNotNone(action)
+                self.assertTrue(
+                    env._is_action_valid(*env._parse_action(action))
+                )
+                self.assertEqual(
+                    telemetry["fallback_policy"],
+                    fallback,
+                )
+                self.assertEqual(
+                    telemetry["actor_guidance"],
+                    guidance,
+                )
 
     def _env(self, **overrides) -> CarrierAircraftSchedulingEnv:
         config = {
