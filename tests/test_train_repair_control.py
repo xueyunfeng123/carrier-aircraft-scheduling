@@ -29,10 +29,40 @@ from scripts.collect_repair_control_oracle import (
     OracleOutcome,
     select_oracle,
 )
+from scripts.analyze_repair_control_oracle import audit_rows
 from solution.cp_sat_repair_model import RepairControl
 
 
 class RepairControlTrainingContractTest(unittest.TestCase):
+    def test_oracle_audit_rejects_collapsed_labels(self) -> None:
+        rows = [
+            {
+                "scenario_seed": str(30001 + index),
+                "profile": "compound_heavy",
+                "wave_interval": "57.5",
+                "normalized_time": str(index / 4),
+                "trigger_label": "0",
+                "budget_ms_label": "10.0",
+                "neighborhood_label": "8",
+                "runner_up_margin": "0.0",
+                "tie_count": "10",
+                "candidate_count": "10",
+            }
+            for index in range(4)
+        ]
+
+        report = audit_rows(rows)
+
+        self.assertFalse(report["passed"])
+        self.assertIn(
+            "insufficient_informative_labels",
+            report["failures"],
+        )
+        self.assertIn(
+            "trigger_rate_out_of_range",
+            report["failures"],
+        )
+
     def test_oracle_prioritizes_sorties_before_runtime(self) -> None:
         fast = OracleOutcome(
             control=RepairControl(

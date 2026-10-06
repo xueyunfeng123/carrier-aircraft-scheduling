@@ -150,6 +150,63 @@ class AircraftFailureLifecycleTest(unittest.TestCase):
         )
         env._validate_aircraft_inventory()
 
+    def test_replacement_reserves_a_free_spatial_parking_spot(
+        self,
+    ) -> None:
+        env = CarrierAircraftSchedulingEnv(
+            {
+                "num_aircraft": 4,
+                "num_total_aircraft": 4,
+                "group_size": 2,
+                "num_parking_spots": 4,
+                "spatial_graph_enabled": True,
+                "wave_interval": 10.0,
+                "simulation_duration": 10.0,
+                "hangar_transfer_time": 1.0,
+                "disruptions": [
+                    {
+                        "kind": "aircraft_failure",
+                        "target": 0,
+                        "start_time": 1.0,
+                        "end_time": 5.0,
+                    }
+                ],
+            }
+        )
+        env.reset(seed=7)
+        self._advance_to(env, 2.0)
+        old_spot = env.failure_spot_by_disruption[0]
+        occupying_aircraft = 1
+        source_spot = env.aircraft[occupying_aircraft].spot_id
+        env.parking_occupancy[source_spot] = None
+        env.deck_occupancy.release(
+            env.deck_layout.parking_node(source_spot),
+            occupying_aircraft,
+        )
+        env.aircraft[occupying_aircraft].spot_id = old_spot
+        env.parking_occupancy[old_spot] = occupying_aircraft
+        env.deck_occupancy.occupy(
+            env.deck_layout.parking_node(old_spot),
+            occupying_aircraft,
+        )
+
+        self._advance_to(env, 5.0)
+
+        replacement_id, reserved_spot = env.replacement_in_transit[0]
+        self.assertEqual(replacement_id, 0)
+        self.assertEqual(reserved_spot, source_spot)
+        self.assertEqual(env.parking_occupancy[reserved_spot], 0)
+        self.assertIn(
+            0,
+            env.deck_occupancy.occupants[
+                env.deck_layout.parking_node(reserved_spot)
+            ],
+        )
+
+        self._advance_to(env, 6.0)
+        self.assertEqual(env.aircraft[0].spot_id, reserved_spot)
+        env._validate_aircraft_inventory()
+
     def test_total_inventory_cannot_be_smaller_than_deck_fleet(
         self,
     ) -> None:

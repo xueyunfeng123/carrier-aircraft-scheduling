@@ -317,7 +317,9 @@ def build_oracle_row(
     return {
         "schema_version": 1,
         "sample_id": (
-            f"{scenario_seed}:{env.time:.9f}:"
+            f"{env.config['disruption_profile']}:"
+            f"{env.wave_interval:g}:{scenario_seed}:"
+            f"{env.time:.9f}:"
             f"{env.event_sequence}:{sample_index}"
         ),
         "scenario_seed": scenario_seed,
@@ -346,6 +348,7 @@ def build_oracle_row(
         "oracle_runtime_ms": best.runtime_ms,
         "runner_up_margin": margin,
         "tie_count": ties,
+        "candidate_count": len(outcomes),
         "sample_weight": 1.0 if margin > 0.0 else 0.25,
     }
 

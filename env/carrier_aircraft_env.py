@@ -1665,7 +1665,32 @@ class CarrierAircraftSchedulingEnv:
             return
         replacement_id = min(self.hangar_ready_aircraft_ids)
         self.hangar_ready_aircraft_ids.remove(replacement_id)
+        aircraft_id = self.failure_slot_by_disruption[disruption_id]
         spot_id = self.failure_spot_by_disruption[disruption_id]
+        if self.parking_occupancy[spot_id] is not None:
+            free_spots = [
+                candidate
+                for candidate, occupied_by in enumerate(
+                    self.parking_occupancy
+                )
+                if occupied_by is None
+            ]
+            if not free_spots:
+                self.hangar_ready_aircraft_ids.add(replacement_id)
+                return
+            spot_id = self._select_parking_spot(
+                aircraft_id,
+                free_spots,
+            )
+            self.failure_spot_by_disruption[disruption_id] = (
+                spot_id
+            )
+        self.parking_occupancy[spot_id] = aircraft_id
+        if self.deck_occupancy is not None and self.deck_layout is not None:
+            self.deck_occupancy.occupy(
+                self.deck_layout.parking_node(spot_id),
+                aircraft_id,
+            )
         self.replacement_in_transit[disruption_id] = (
             replacement_id,
             spot_id,
@@ -1678,7 +1703,7 @@ class CarrierAircraftSchedulingEnv:
         )
         self._log_event(
             "replacement_transfer_start",
-            self.failure_slot_by_disruption[disruption_id],
+            aircraft_id,
             disruption_id=disruption_id,
             physical_aircraft_id=replacement_id,
             target_spot_id=spot_id,
