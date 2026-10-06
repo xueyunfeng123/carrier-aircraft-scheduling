@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
+from env.disruptions import PROFILE_SETTINGS
 from solution.cp_sat_solver import CPSATSolver
 from solution.rl_solver import RLSolver
 
@@ -140,3 +141,76 @@ class AdaptiveRLCPSolver:
             ),
         )
         return float(values[index])
+
+
+class RiskAwareAdaptiveRLCPSolver(AdaptiveRLCPSolver):
+    """Select a conservative CP regime under high pressure or severe risk."""
+
+    def __init__(
+        self,
+        env: CarrierAircraftSchedulingEnv,
+        checkpoint: str = "",
+        device: str = "cpu",
+        deterministic: bool = True,
+        max_time_seconds: float = 0.05,
+        pressure_interval_threshold: float = 47.5,
+        severe_risk_multiplier: float = 2.0,
+        severe_relief_interval: float = 67.5,
+    ):
+        super().__init__(
+            env,
+            checkpoint=checkpoint,
+            device=device,
+            deterministic=deterministic,
+            max_time_seconds=max_time_seconds,
+        )
+        self.pressure_interval_threshold = float(
+            pressure_interval_threshold
+        )
+        self.severe_risk_multiplier = float(
+            severe_risk_multiplier
+        )
+        self.severe_relief_interval = float(
+            severe_relief_interval
+        )
+        self.force_cp_regime = self._force_cp_regime()
+
+    def _repair_mode(self) -> bool:
+        return self.force_cp_regime or super()._repair_mode()
+
+    def _force_cp_regime(self) -> bool:
+        interval = float(self.env.config["wave_interval"])
+        if interval <= self.pressure_interval_threshold:
+            return True
+        profile = str(
+            self.env.config.get("disruption_profile", "none")
+        )
+        risk_multiplier = float(
+            PROFILE_SETTINGS.get(profile, {}).get(
+                "multiplier",
+                1.0,
+            )
+        )
+        return (
+            risk_multiplier >= self.severe_risk_multiplier
+            and interval < self.severe_relief_interval
+        )
+
+    def get_telemetry(self) -> Dict[str, Any]:
+        telemetry = super().get_telemetry()
+        telemetry.update(
+            {
+                "meta_controller": "risk_aware",
+                "force_cp_regime": self.force_cp_regime,
+                "pressure_interval_threshold": (
+                    self.pressure_interval_threshold
+                ),
+                "severe_risk_multiplier": (
+                    self.severe_risk_multiplier
+                ),
+                "severe_relief_interval": (
+                    self.severe_relief_interval
+                ),
+            }
+        )
+        return telemetry

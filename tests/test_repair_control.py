@@ -20,7 +20,10 @@ from solution.hybrid_rescheduling_solver import (
 from solution.event_triggered_repair_solver import (
     EventTriggeredRepairSolver,
 )
-from solution.adaptive_rl_cp_solver import AdaptiveRLCPSolver
+from solution.adaptive_rl_cp_solver import (
+    AdaptiveRLCPSolver,
+    RiskAwareAdaptiveRLCPSolver,
+)
 
 
 class RepairControlTest(unittest.TestCase):
@@ -260,6 +263,53 @@ class RepairControlTest(unittest.TestCase):
         records = solver.get_decision_records()
         self.assertEqual(records[0]["source"], "actor")
         self.assertEqual(records[-1]["source"], "cp_sat")
+
+    def test_risk_aware_hybrid_forces_cp_under_pressure(
+        self,
+    ) -> None:
+        env = self._env(
+            disruption_profile="none",
+            wave_interval=47.5,
+            simulation_duration=95.0,
+        )
+        solver = RiskAwareAdaptiveRLCPSolver(
+            env,
+            checkpoint="",
+            max_time_seconds=0.01,
+        )
+
+        action = solver.choose_action()
+
+        self.assertIsNotNone(action)
+        self.assertTrue(solver.force_cp_regime)
+        self.assertEqual(
+            solver.get_decision_records()[0]["source"],
+            "cp_sat",
+        )
+
+    def test_risk_aware_hybrid_preserves_actor_with_relief(
+        self,
+    ) -> None:
+        env = self._env(
+            disruption_profile="none",
+            wave_interval=67.5,
+            simulation_duration=135.0,
+        )
+        env.config["disruption_profile"] = "compound_heavy"
+        solver = RiskAwareAdaptiveRLCPSolver(
+            env,
+            checkpoint="",
+            max_time_seconds=0.01,
+        )
+
+        action = solver.choose_action()
+
+        self.assertIsNotNone(action)
+        self.assertFalse(solver.force_cp_regime)
+        self.assertEqual(
+            solver.get_decision_records()[0]["source"],
+            "actor",
+        )
 
     def _env(self, **overrides) -> CarrierAircraftSchedulingEnv:
         config = {

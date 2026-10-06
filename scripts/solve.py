@@ -29,7 +29,10 @@ from solution import (
 from solution.event_triggered_repair_solver import (
     EventTriggeredRepairSolver,
 )
-from solution.adaptive_rl_cp_solver import AdaptiveRLCPSolver
+from solution.adaptive_rl_cp_solver import (
+    AdaptiveRLCPSolver,
+    RiskAwareAdaptiveRLCPSolver,
+)
 from solution.hybrid_rescheduling_solver import (
     ActorFallbackRepairSolver,
     HybridReschedulingSolver,
@@ -47,6 +50,7 @@ SOLVERS: Dict[str, Type] = {
     "fifo": FIFOSolver,
     "heuristic": WaveHeuristicSolver,
     "random": RandomSolver,
+    "risk_aware_rl_cp": RiskAwareAdaptiveRLCPSolver,
     "rl": RLSolver,
     "rl_cp_sat": HybridReschedulingSolver,
     "rl_fallback_cp_sat": ActorFallbackRepairSolver,
@@ -76,6 +80,7 @@ def run_episode(
         "cp_sat_repair",
         "event_cp_sat_repair",
         "adaptive_rl_cp",
+        "risk_aware_rl_cp",
         "rl_cp_sat",
         "rl_fallback_cp_sat",
         "rl_guided_cp_sat",
@@ -425,7 +430,10 @@ def main() -> None:
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
         }
-    elif args.solver == "adaptive_rl_cp":
+    elif args.solver in (
+        "adaptive_rl_cp",
+        "risk_aware_rl_cp",
+    ):
         solver_options = {
             "checkpoint": args.checkpoint,
             "device": args.rl_device,

@@ -137,12 +137,15 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
                         "options": options,
                     }
                 )
-        elif solver == "adaptive_rl_cp":
+        elif solver in {
+            "adaptive_rl_cp",
+            "risk_aware_rl_cp",
+        }:
             for budget_ms in args.budgets_ms:
                 specs.append(
                     {
                         "label": (
-                            f"adaptive_rl_cp_b{budget_ms:g}"
+                            f"{solver}_b{budget_ms:g}"
                         ),
                         "solver": solver,
                         "budget_ms": float(budget_ms),
@@ -591,7 +594,8 @@ def repository_provenance() -> Dict[str, Any]:
             untracked_source[raw_path] = file_sha256(path)
     return {
         "git_commit": commit,
-        "git_dirty": bool(status),
+        "git_dirty": bool(diff) or bool(untracked_source),
+        "workspace_dirty": bool(status),
         "git_status_sha256": hashlib.sha256(
             status.encode("utf-8")
         ).hexdigest(),
@@ -697,6 +701,7 @@ def main() -> None:
         in {
             "rl",
             "adaptive_rl_cp",
+            "risk_aware_rl_cp",
             "rl_cp_sat",
             "rl_fallback_cp_sat",
             "rl_guided_cp_sat",
@@ -733,6 +738,7 @@ def main() -> None:
         in {
             "rl",
             "adaptive_rl_cp",
+            "risk_aware_rl_cp",
             "rl_cp_sat",
             "rl_fallback_cp_sat",
             "rl_guided_cp_sat",
