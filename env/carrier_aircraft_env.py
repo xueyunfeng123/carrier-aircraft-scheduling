@@ -47,6 +47,9 @@ class AircraftRecord:
 
     group: str = "shared"
     initial_role: str = "mission"
+    physical_aircraft_id: int = -1
+    lifecycle_status: str = "deck_serviceable"
+    failure_count: int = 0
     spot_id: int = -1
     parking_status: int = 0
     is_airborne: bool = False
@@ -149,6 +152,13 @@ class CarrierAircraftSchedulingEnv:
         if config:
             self.config.update(config)
         self.num_aircraft = int(self.config["num_aircraft"])
+        self.num_total_aircraft = int(
+            self.config["num_total_aircraft"]
+        )
+        if self.num_total_aircraft < self.num_aircraft:
+            raise ValueError(
+                "num_total_aircraft must be at least num_aircraft"
+            )
         self.group_size = int(self.config["group_size"])
         if self.num_aircraft < self.group_size * 2:
             raise ValueError(
@@ -268,6 +278,7 @@ class CarrierAircraftSchedulingEnv:
                         if aircraft_id >= self.group_size * 2
                         else "mission"
                     ),
+                    physical_aircraft_id=aircraft_id,
                     spot_id=spot_id,
                     parking_status=2,
                     is_airborne=False,
@@ -309,6 +320,22 @@ class CarrierAircraftSchedulingEnv:
         self.unavailable_vehicle_ids: set[str] = set()
         self.closed_runway_ids: set[int] = set()
         self.unavailable_aircraft_ids: set[int] = set()
+        self.hangar_ready_aircraft_ids = set(
+            range(self.num_aircraft, self.num_total_aircraft)
+        )
+        self.under_repair_aircraft_ids: set[int] = set()
+        self.failure_blocked_slots: set[int] = set()
+        self.failure_slot_by_disruption: Dict[int, int] = {}
+        self.failure_physical_by_disruption: Dict[int, int] = {}
+        self.failure_spot_by_disruption: Dict[int, int] = {}
+        self.failure_transfer_started: set[int] = set()
+        self.repair_release_reached: set[int] = set()
+        self.replacement_in_transit: Dict[int, Tuple[int, int]] = {}
+        self.failure_metrics: Dict[str, int] = {
+            "detected": 0,
+            "replacements": 0,
+            "repairs_completed": 0,
+        }
         self.service_time_multipliers: Dict[str, float] = {
             "fuel": 1.0,
             "inspection": 1.0,
@@ -490,6 +517,21 @@ class CarrierAircraftSchedulingEnv:
                 "service_time_multipliers": dict(
                     self.service_time_multipliers
                 ),
+                "failure_lifecycle": {
+                    **self.failure_metrics,
+                    "blocked_slots": len(
+                        self.failure_blocked_slots
+                    ),
+                    "hangar_ready": len(
+                        self.hangar_ready_aircraft_ids
+                    ),
+                    "under_repair": len(
+                        self.under_repair_aircraft_ids
+                    ),
+                    "replacements_in_transit": len(
+                        self.replacement_in_transit
+                    ),
+                },
             },
         }
 
@@ -663,6 +705,11 @@ class CarrierAircraftSchedulingEnv:
                     "aircraft_id": aircraft_id,
                     "group": item.group,
                     "initial_role": item.initial_role,
+                    "physical_aircraft_id": (
+                        item.physical_aircraft_id
+                    ),
+                    "lifecycle_status": item.lifecycle_status,
+                    "failure_count": item.failure_count,
                     "spot_id": item.spot_id,
                     "spot_transfer_time": self._spot_transfer_time(item.spot_id),
                     "parking_status": item.parking_status,
@@ -749,6 +796,21 @@ class CarrierAircraftSchedulingEnv:
                     self.disruption_metrics["started_by_kind"]
                 ),
                 "active_at_end": len(self.active_disruptions),
+                "failure_lifecycle": {
+                    **self.failure_metrics,
+                    "blocked_slots": len(
+                        self.failure_blocked_slots
+                    ),
+                    "hangar_ready": len(
+                        self.hangar_ready_aircraft_ids
+                    ),
+                    "under_repair": len(
+                        self.under_repair_aircraft_ids
+                    ),
+                    "replacements_in_transit": len(
+                        self.replacement_in_transit
+                    ),
+                },
             },
             "scenario_tape": (
                 self.scenario_tape.metadata()
@@ -809,6 +871,14 @@ class CarrierAircraftSchedulingEnv:
                 "disruption_end",
             ):
                 self._process_disruption_event(event)
+                continue
+            if event.event_type == "hangar_transfer_done":
+                self._handle_hangar_transfer_done(event.aircraft_id)
+                continue
+            if event.event_type == "replacement_transfer_done":
+                self._handle_replacement_transfer_done(
+                    event.aircraft_id
+                )
                 continue
             if event.event_type == "clearance_done":
                 self._log_event("clearance_done")
@@ -947,9 +1017,10 @@ class CarrierAircraftSchedulingEnv:
                 self.free_launch_channels += 1
                 completed["launch"] += 1
 
-        for aircraft in self.aircraft:
+        for aircraft_id, aircraft in enumerate(self.aircraft):
             if (
-                not aircraft.is_airborne
+                aircraft_id not in self.failure_blocked_slots
+                and not aircraft.is_airborne
                 and aircraft.parking_status == 2
                 and aircraft.recovery_status == 2
                 and aircraft.fuel_status == 2
@@ -959,7 +1030,9 @@ class CarrierAircraftSchedulingEnv:
             ):
                 aircraft.launch_status = 1
                 aircraft.launch_ready = self.time
+        self._try_start_pending_failure_transfers()
         self._try_start_waiting_deck_arming()
+        self._validate_aircraft_inventory()
         if self.deck_occupancy is not None:
             self.deck_occupancy.validate()
         return completed
@@ -1368,7 +1441,7 @@ class CarrierAircraftSchedulingEnv:
                 raise ValueError(
                     f"unknown disruption runway: {spec.target}"
                 )
-        elif spec.kind == "aircraft_hold":
+        elif spec.kind in ("aircraft_hold", "aircraft_failure"):
             aircraft_id = int(spec.target)
             if not 0 <= aircraft_id < self.num_aircraft:
                 raise ValueError(
@@ -1390,12 +1463,21 @@ class CarrierAircraftSchedulingEnv:
             self.disruption_metrics["started"] += 1
             by_kind = self.disruption_metrics["started_by_kind"]
             by_kind[spec.kind] = by_kind.get(spec.kind, 0) + 1
+            if spec.kind == "aircraft_failure":
+                self._begin_aircraft_failure(spec)
         else:
             self.active_disruptions.pop(
                 spec.disruption_id,
                 None,
             )
             self.disruption_metrics["ended"] += 1
+            if spec.kind == "aircraft_failure":
+                self.repair_release_reached.add(
+                    spec.disruption_id
+                )
+                self._finish_repair_if_possible(
+                    spec.disruption_id
+                )
         self._refresh_disruption_state()
         self._invalidate_planning_cache()
         self._log_event(
@@ -1418,11 +1500,14 @@ class CarrierAircraftSchedulingEnv:
             for spec in active
             if spec.kind == "runway_closure"
         }
-        self.unavailable_aircraft_ids = {
+        held_aircraft = {
             int(spec.target)
             for spec in active
             if spec.kind == "aircraft_hold"
         }
+        self.unavailable_aircraft_ids = (
+            held_aircraft | set(self.failure_blocked_slots)
+        )
         multipliers = {
             "fuel": 1.0,
             "inspection": 1.0,
@@ -1443,6 +1528,291 @@ class CarrierAircraftSchedulingEnv:
                     spec.multiplier,
                 )
         self.service_time_multipliers = multipliers
+
+    def _begin_aircraft_failure(
+        self,
+        spec: DisruptionSpec,
+    ) -> None:
+        disruption_id = int(spec.disruption_id)
+        aircraft_id = int(spec.target)
+        aircraft = self.aircraft[aircraft_id]
+        if aircraft_id in self.failure_blocked_slots:
+            raise RuntimeError(
+                f"aircraft slot already failed: {aircraft_id}"
+            )
+        self.failure_slot_by_disruption[disruption_id] = aircraft_id
+        self.failure_physical_by_disruption[disruption_id] = (
+            aircraft.physical_aircraft_id
+        )
+        self.failure_blocked_slots.add(aircraft_id)
+        aircraft.failure_count += 1
+        aircraft.lifecycle_status = (
+            "failure_pending_recovery"
+            if aircraft.is_airborne
+            else "failure_detected"
+        )
+        self.failure_metrics["detected"] += 1
+        self._log_event(
+            "aircraft_failure_detected",
+            aircraft_id,
+            disruption_id=disruption_id,
+            physical_aircraft_id=aircraft.physical_aircraft_id,
+            airborne=aircraft.is_airborne,
+        )
+        self._try_start_pending_failure_transfers()
+
+    def _try_start_pending_failure_transfers(self) -> None:
+        for disruption_id, aircraft_id in tuple(
+            self.failure_slot_by_disruption.items()
+        ):
+            if disruption_id in self.failure_transfer_started:
+                continue
+            if not self._aircraft_can_leave_deck(aircraft_id):
+                continue
+            self._start_failure_transfer(
+                disruption_id,
+                aircraft_id,
+            )
+
+    def _aircraft_can_leave_deck(self, aircraft_id: int) -> bool:
+        aircraft = self.aircraft[aircraft_id]
+        return (
+            not aircraft.is_airborne
+            and aircraft.parking_status == 2
+            and aircraft.recovery_status == 2
+            and aircraft.fuel_status != 1
+            and aircraft.inspection_status != 1
+            and aircraft.arm_status != 1
+            and aircraft.launch_status != 2
+            and aircraft_id not in self.active_deck_routes
+        )
+
+    def _start_failure_transfer(
+        self,
+        disruption_id: int,
+        aircraft_id: int,
+    ) -> None:
+        aircraft = self.aircraft[aircraft_id]
+        spot_id = aircraft.spot_id
+        if spot_id < 0:
+            raise RuntimeError(
+                "failed deck aircraft has no parking position"
+            )
+        self.failure_transfer_started.add(disruption_id)
+        self.failure_spot_by_disruption[disruption_id] = spot_id
+        aircraft.lifecycle_status = "to_hangar"
+        if self.deck_occupancy is not None and self.deck_layout is not None:
+            self.deck_occupancy.release(
+                self.deck_layout.parking_node(spot_id),
+                aircraft_id,
+            )
+        self._release_parking_spot(aircraft_id)
+        aircraft.spot_id = -1
+        aircraft.parking_status = 0
+        aircraft.launch_status = 0
+        transfer_time = float(self.config["hangar_transfer_time"])
+        self._push_event(
+            self.time + transfer_time,
+            "hangar_transfer_done",
+            disruption_id,
+        )
+        self._log_event(
+            "hangar_transfer_start",
+            aircraft_id,
+            disruption_id=disruption_id,
+            physical_aircraft_id=(
+                self.failure_physical_by_disruption[
+                    disruption_id
+                ]
+            ),
+            target_spot_id=spot_id,
+            duration=transfer_time,
+        )
+        self._start_replacement_transfer(disruption_id)
+
+    def _start_replacement_transfer(
+        self,
+        disruption_id: int,
+    ) -> None:
+        if (
+            disruption_id in self.replacement_in_transit
+            or not self.hangar_ready_aircraft_ids
+        ):
+            return
+        replacement_id = min(self.hangar_ready_aircraft_ids)
+        self.hangar_ready_aircraft_ids.remove(replacement_id)
+        spot_id = self.failure_spot_by_disruption[disruption_id]
+        self.replacement_in_transit[disruption_id] = (
+            replacement_id,
+            spot_id,
+        )
+        transfer_time = float(self.config["hangar_transfer_time"])
+        self._push_event(
+            self.time + transfer_time,
+            "replacement_transfer_done",
+            disruption_id,
+        )
+        self._log_event(
+            "replacement_transfer_start",
+            self.failure_slot_by_disruption[disruption_id],
+            disruption_id=disruption_id,
+            physical_aircraft_id=replacement_id,
+            target_spot_id=spot_id,
+            duration=transfer_time,
+        )
+
+    def _handle_hangar_transfer_done(
+        self,
+        disruption_id: int,
+    ) -> None:
+        aircraft_id = self.failure_slot_by_disruption[disruption_id]
+        physical_id = self.failure_physical_by_disruption[
+            disruption_id
+        ]
+        self.under_repair_aircraft_ids.add(physical_id)
+        if disruption_id not in self.replacement_in_transit:
+            self.aircraft[aircraft_id].lifecycle_status = (
+                "under_repair"
+            )
+        self._log_event(
+            "hangar_transfer_done",
+            aircraft_id,
+            disruption_id=disruption_id,
+            physical_aircraft_id=physical_id,
+        )
+        self._log_event(
+            "repair_start",
+            aircraft_id,
+            disruption_id=disruption_id,
+            physical_aircraft_id=physical_id,
+        )
+        self._finish_repair_if_possible(disruption_id)
+
+    def _handle_replacement_transfer_done(
+        self,
+        disruption_id: int,
+    ) -> None:
+        aircraft_id = self.failure_slot_by_disruption[disruption_id]
+        replacement_id, spot_id = self.replacement_in_transit.pop(
+            disruption_id
+        )
+        aircraft = self.aircraft[aircraft_id]
+        aircraft.physical_aircraft_id = replacement_id
+        aircraft.initial_role = "reserve"
+        aircraft.lifecycle_status = "deck_serviceable"
+        aircraft.spot_id = spot_id
+        aircraft.parking_status = 2
+        aircraft.is_airborne = False
+        aircraft.pending_recovery = False
+        aircraft.recovery_status = 2
+        aircraft.fuel_status = 2
+        aircraft.fuel_level = float(
+            self.config["initial_fuel_level"]
+        )
+        aircraft.inspection_status = 2
+        aircraft.arm_status = 2
+        aircraft.arm_stage = 4
+        aircraft.arm_quantity_required = 0
+        aircraft.launch_status = 1
+        aircraft.launch_ready = self.time
+        aircraft.assigned_launch_wave = None
+        aircraft.recovery_due_wave = None
+        self.parking_occupancy[spot_id] = aircraft_id
+        if self.deck_occupancy is not None and self.deck_layout is not None:
+            self.deck_occupancy.occupy(
+                self.deck_layout.parking_node(spot_id),
+                aircraft_id,
+            )
+        self.failure_blocked_slots.discard(aircraft_id)
+        self.failure_metrics["replacements"] += 1
+        self._refresh_disruption_state()
+        self._invalidate_planning_cache()
+        self._log_event(
+            "replacement_transfer_done",
+            aircraft_id,
+            disruption_id=disruption_id,
+            physical_aircraft_id=replacement_id,
+            target_spot_id=spot_id,
+        )
+
+    def _finish_repair_if_possible(
+        self,
+        disruption_id: int,
+    ) -> None:
+        physical_id = self.failure_physical_by_disruption.get(
+            disruption_id
+        )
+        if (
+            disruption_id not in self.repair_release_reached
+            or physical_id not in self.under_repair_aircraft_ids
+        ):
+            return
+        self.under_repair_aircraft_ids.remove(physical_id)
+        self.hangar_ready_aircraft_ids.add(physical_id)
+        self.failure_metrics["repairs_completed"] += 1
+        aircraft_id = self.failure_slot_by_disruption[disruption_id]
+        self._log_event(
+            "repair_done",
+            aircraft_id,
+            disruption_id=disruption_id,
+            physical_aircraft_id=physical_id,
+        )
+        if aircraft_id in self.failure_blocked_slots:
+            self._start_replacement_transfer(disruption_id)
+
+    def get_aircraft_inventory_state(self) -> Dict[str, Any]:
+        deck_statuses = {
+            "deck_serviceable",
+            "failure_detected",
+            "failure_pending_recovery",
+        }
+        deck_ids = {
+            aircraft.physical_aircraft_id
+            for aircraft in self.aircraft
+            if aircraft.lifecycle_status in deck_statuses
+            and aircraft.physical_aircraft_id >= 0
+        }
+        inbound_ids = {
+            physical_id
+            for physical_id, _ in self.replacement_in_transit.values()
+        }
+        outbound_ids = {
+            self.failure_physical_by_disruption[disruption_id]
+            for disruption_id in self.failure_transfer_started
+            if self.aircraft[
+                self.failure_slot_by_disruption[disruption_id]
+            ].lifecycle_status
+            == "to_hangar"
+        }
+        categories = {
+            "deck": deck_ids,
+            "hangar_ready": set(self.hangar_ready_aircraft_ids),
+            "under_repair": set(self.under_repair_aircraft_ids),
+            "to_hangar": outbound_ids,
+            "to_deck": inbound_ids,
+        }
+        return {
+            name: sorted(values)
+            for name, values in categories.items()
+        }
+
+    def _validate_aircraft_inventory(self) -> None:
+        state = self.get_aircraft_inventory_state()
+        all_ids: List[int] = []
+        for values in state.values():
+            all_ids.extend(values)
+        if len(all_ids) != len(set(all_ids)):
+            raise RuntimeError(
+                "physical aircraft appears in multiple inventory states"
+            )
+        expected = set(range(self.num_total_aircraft))
+        if set(all_ids) != expected:
+            missing = sorted(expected - set(all_ids))
+            unexpected = sorted(set(all_ids) - expected)
+            raise RuntimeError(
+                "physical aircraft inventory is inconsistent: "
+                f"missing={missing}, unexpected={unexpected}"
+            )
 
     def _start_wave(self, wave_index: int) -> None:
         self._invalidate_planning_cache()

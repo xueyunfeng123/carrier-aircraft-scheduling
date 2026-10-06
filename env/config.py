@@ -19,6 +19,7 @@ ACTION_TO_INDEX = {value: key for key, value in HIGH_LEVEL_ACTIONS.items()}
 DEFAULT_CONFIG: Dict[str, Any] = {
     "scenario_profile": "project_core",
     "num_aircraft": 45,
+    "num_total_aircraft": 75,
     "group_size": 20,  # Wave demand; retained name for CLI/config compatibility.
     "num_parking_spots": 45,
     "parking_base_transfer_time": 2.0,
@@ -49,6 +50,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "num_lower_weapon_lifts": 6,
     "num_upper_weapon_lifts": 4,
     "num_personnel": 50,
+    "hangar_transfer_time": 5.0,
     "personnel_scheduling_enabled": False,
     "fuel_personnel_required": 4,
     "inspection_personnel_required": 2,

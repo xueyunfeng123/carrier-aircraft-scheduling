@@ -65,6 +65,7 @@ DISRUPTION_KINDS = (
     "vehicle_outage",
     "runway_closure",
     "aircraft_hold",
+    "aircraft_failure",
     "service_slowdown",
 )
 
@@ -103,6 +104,9 @@ def build_disruption_schedule(
             range(int(config["num_launch_positions"]))
         ),
         "aircraft_hold": tuple(
+            range(int(config["num_aircraft"]))
+        ),
+        "aircraft_failure": tuple(
             range(int(config["num_aircraft"]))
         ),
         "service_slowdown": (
