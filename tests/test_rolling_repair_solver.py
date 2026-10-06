@@ -57,6 +57,37 @@ class RollingRepairSolverTest(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(min(first, second), 0)
 
+    def test_model_includes_work_waiting_for_a_busy_resource(
+        self,
+    ) -> None:
+        env = self._service_env(num_fuel_servers=1)
+        for aircraft_id in (0, 1):
+            aircraft = env.aircraft[aircraft_id]
+            aircraft.fuel_status = 0
+            aircraft.fuel_level = 0.2
+        env._invalidate_planning_cache()
+        action = env.complete_action(
+            {"high_level": 1, "aircraft_id": 0}
+        )
+        env.step(action)
+        self.assertEqual(
+            env.get_high_level_action_mask()[1],
+            0,
+        )
+
+        tasks = CPSATRepairModel(env)._planning_tasks(
+            RepairControl(
+                budget_ms=50.0,
+                neighborhood_size=4,
+            ),
+            {},
+        )
+
+        self.assertIn(
+            (1, 1),
+            {task.action_key for task in tasks},
+        )
+
     def test_solver_returns_legal_repair_action(self) -> None:
         env = self._service_env()
         aircraft = env.aircraft[0]
@@ -120,6 +151,42 @@ class RollingRepairSolverTest(unittest.TestCase):
         self.assertGreater(
             len({task.action_key[1] for task in two_waves}),
             len({task.action_key[1] for task in current}),
+        )
+
+    def test_actor_guidance_selects_the_repair_neighborhood(
+        self,
+    ) -> None:
+        env = self._service_env()
+        for aircraft in env.aircraft:
+            aircraft.inspection_status = 0
+            aircraft.launch_status = 0
+        env._invalidate_planning_cache()
+        control = RepairControl(
+            scope="two_waves",
+            budget_ms=50.0,
+            neighborhood_size=1,
+        )
+        scores = {
+            (4, aircraft_id): float(aircraft_id)
+            for aircraft_id in range(4)
+        }
+
+        unguided = CPSATRepairModel(
+            env,
+            guidance_strength=0.0,
+        )._planning_tasks(control, scores)
+        guided = CPSATRepairModel(
+            env,
+            guidance_strength=100.0,
+        )._planning_tasks(control, scores)
+
+        self.assertEqual(
+            {task.action_key[1] for task in unguided},
+            {0},
+        )
+        self.assertEqual(
+            {task.action_key[1] for task in guided},
+            {3},
         )
 
     def test_zero_budget_uses_incumbent_fallback(self) -> None:

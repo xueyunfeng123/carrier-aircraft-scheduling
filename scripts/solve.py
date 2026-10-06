@@ -29,14 +29,17 @@ from solution import (
 from solution.event_triggered_repair_solver import (
     EventTriggeredRepairSolver,
 )
+from solution.adaptive_rl_cp_solver import AdaptiveRLCPSolver
 from solution.hybrid_rescheduling_solver import (
     ActorFallbackRepairSolver,
     HybridReschedulingSolver,
     RLGuidedRepairSolver,
+    StrongFallbackGuidedRepairSolver,
 )
 
 
 SOLVERS: Dict[str, Type] = {
+    "adaptive_rl_cp": AdaptiveRLCPSolver,
     "cp_sat": CPSATSolver,
     "cp_sat_repair": RollingRepairSolver,
     "edd": EDDSolver,
@@ -48,6 +51,9 @@ SOLVERS: Dict[str, Type] = {
     "rl_cp_sat": HybridReschedulingSolver,
     "rl_fallback_cp_sat": ActorFallbackRepairSolver,
     "rl_guided_cp_sat": RLGuidedRepairSolver,
+    "rl_guided_strong_cp_sat": (
+        StrongFallbackGuidedRepairSolver
+    ),
     "spt": SPTSolver,
 }
 
@@ -69,9 +75,11 @@ def run_episode(
         "cp_sat",
         "cp_sat_repair",
         "event_cp_sat_repair",
+        "adaptive_rl_cp",
         "rl_cp_sat",
         "rl_fallback_cp_sat",
         "rl_guided_cp_sat",
+        "rl_guided_strong_cp_sat",
     ):
         solver = solver_cls(env, **solver_options)
     elif solver_name == "rl":
@@ -369,6 +377,11 @@ def main() -> None:
         default=100.0,
     )
     parser.add_argument(
+        "--repair-max-trigger-severity",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--repair-scope",
         choices=("current_wave", "two_waves", "affected"),
         default="two_waves",
@@ -412,10 +425,18 @@ def main() -> None:
             "hidden_dim": args.rl_hidden_dim,
             "aircraft_embed_dim": args.rl_aircraft_embed_dim,
         }
+    elif args.solver == "adaptive_rl_cp":
+        solver_options = {
+            "checkpoint": args.checkpoint,
+            "device": args.rl_device,
+            "deterministic": not args.rl_stochastic,
+            "max_time_seconds": args.cp_sat_max_time,
+        }
     elif args.solver in (
         "rl_cp_sat",
         "rl_fallback_cp_sat",
         "rl_guided_cp_sat",
+        "rl_guided_strong_cp_sat",
     ):
         solver_options = {
             "checkpoint": args.checkpoint,
@@ -430,6 +451,9 @@ def main() -> None:
             "scope": args.repair_scope,
             "guidance_strength": (
                 args.repair_guidance_strength
+            ),
+            "max_trigger_severity": (
+                args.repair_max_trigger_severity
             ),
         }
     results = [

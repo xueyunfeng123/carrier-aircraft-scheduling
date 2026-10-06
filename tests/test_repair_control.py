@@ -15,10 +15,12 @@ from solution.hybrid_rescheduling_solver import (
     ActorFallbackRepairSolver,
     HybridReschedulingSolver,
     RLGuidedRepairSolver,
+    StrongFallbackGuidedRepairSolver,
 )
 from solution.event_triggered_repair_solver import (
     EventTriggeredRepairSolver,
 )
+from solution.adaptive_rl_cp_solver import AdaptiveRLCPSolver
 
 
 class RepairControlTest(unittest.TestCase):
@@ -93,6 +95,31 @@ class RepairControlTest(unittest.TestCase):
 
         self.assertEqual(disrupted.budget_ms, 10.0)
         self.assertEqual(disrupted.neighborhood_size, 8)
+
+    def test_rule_controller_can_skip_extreme_disruptions(
+        self,
+    ) -> None:
+        env = self._env(
+            disruptions=[
+                {
+                    "kind": "service_slowdown",
+                    "target": "all",
+                    "start_time": 1.0,
+                    "end_time": 3.0,
+                    "multiplier": 2.0,
+                }
+            ]
+        )
+        controller = RuleBasedRepairController(
+            max_trigger_severity=0.375,
+        )
+        controller(env)
+        env._advance_time_to_next_event()
+
+        disrupted = controller(env)
+
+        self.assertFalse(disrupted.trigger)
+        self.assertEqual(disrupted.scope, "affected")
 
     def test_control_network_heads_have_valid_shapes(self) -> None:
         import torch
@@ -171,6 +198,11 @@ class RepairControlTest(unittest.TestCase):
                 "actor",
                 False,
             ),
+            (
+                StrongFallbackGuidedRepairSolver,
+                "cp_sat",
+                True,
+            ),
         )
         for solver_class, fallback, guidance in variants:
             with self.subTest(solver=solver_class.__name__):
@@ -197,6 +229,37 @@ class RepairControlTest(unittest.TestCase):
                     telemetry["actor_guidance"],
                     guidance,
                 )
+
+    def test_adaptive_hybrid_switches_to_cp_during_disruption(
+        self,
+    ) -> None:
+        env = self._env(
+            disruptions=[
+                {
+                    "kind": "service_slowdown",
+                    "target": "all",
+                    "start_time": 1.0,
+                    "end_time": 3.0,
+                    "multiplier": 1.5,
+                }
+            ]
+        )
+        solver = AdaptiveRLCPSolver(
+            env,
+            checkpoint="",
+            max_time_seconds=0.01,
+        )
+
+        first = solver.choose_action()
+        env.step(first)
+        if env.time < 1.0:
+            env._advance_time_to_next_event()
+        second = solver.choose_action()
+
+        self.assertIsNotNone(second)
+        records = solver.get_decision_records()
+        self.assertEqual(records[0]["source"], "actor")
+        self.assertEqual(records[-1]["source"], "cp_sat")
 
     def _env(self, **overrides) -> CarrierAircraftSchedulingEnv:
         config = {

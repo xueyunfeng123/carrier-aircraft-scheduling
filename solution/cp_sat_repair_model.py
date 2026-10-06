@@ -324,6 +324,9 @@ class CPSATRepairModel:
                 [],
             ).append(task.action_key)
         sortie_weight = secondary_objective_bound + 1
+        active_completion_ticks = (
+            self._active_completion_ticks_by_aircraft(max_end)
+        )
         for aircraft_id, action_keys in task_keys_by_aircraft.items():
             completion = model.NewIntVar(
                 0,
@@ -332,7 +335,19 @@ class CPSATRepairModel:
             )
             model.AddMaxEquality(
                 completion,
-                [ends[action_key] for action_key in action_keys],
+                [
+                    ends[action_key]
+                    for action_key in action_keys
+                ]
+                + (
+                    [
+                        model.NewConstant(
+                            active_completion_ticks[aircraft_id]
+                        )
+                    ]
+                    if aircraft_id in active_completion_ticks
+                    else []
+                ),
             )
             ready = model.NewBoolVar(f"ready_{aircraft_id}")
             model.Add(completion <= deadline_ticks).OnlyEnforceIf(
@@ -413,7 +428,6 @@ class CPSATRepairModel:
                 ACTION_INSPECTION,
                 ACTION_ARM,
             )
-            if mask["high_level"][action]
             for aircraft_id, allowed in enumerate(
                 mask["low_level_by_high"][action]
             )
@@ -466,11 +480,29 @@ class CPSATRepairModel:
             guidance_scores,
         )
         affected = set(self.env.unavailable_aircraft_ids)
+        aircraft_guidance = {
+            aircraft_id: max(
+                normalized_guidance.get(
+                    (action, aircraft_id),
+                    0.0,
+                )
+                for action, candidate_id in candidates
+                if candidate_id == aircraft_id
+            )
+            for aircraft_id in {
+                candidate_id for _, candidate_id in candidates
+            }
+        }
         ranked_aircraft = sorted(
             {aircraft_id for _, aircraft_id in candidates},
             key=lambda aircraft_id: (
                 0 if aircraft_id in affected else 1,
                 self.priority._launch_deadline(aircraft_id),
+                (
+                    -aircraft_guidance[aircraft_id]
+                    if self.guidance_strength > 0.0
+                    else 0.0
+                ),
                 min(
                     self.priority._expected_action_duration(
                         action,
@@ -527,6 +559,39 @@ class CPSATRepairModel:
                 )
             )
         return tasks
+
+    def _active_completion_ticks_by_aircraft(
+        self,
+        max_end: int,
+    ) -> Dict[int, int]:
+        event_by_key = {
+            (event.event_type, event.aircraft_id): event.time
+            for event in self.env.event_queue
+        }
+        result = {}
+        for aircraft_id, aircraft in enumerate(self.env.aircraft):
+            remaining = [
+                self._active_service_remaining(
+                    service_type,
+                    aircraft_id,
+                    event_by_key,
+                )
+                for service_type, active in (
+                    ("fuel", aircraft.fuel_status == 1),
+                    (
+                        "inspection",
+                        aircraft.inspection_status == 1,
+                    ),
+                    ("arm", aircraft.arm_status == 1),
+                )
+                if active
+            ]
+            if remaining:
+                result[aircraft_id] = min(
+                    max_end,
+                    self._ticks(max(remaining)),
+                )
+        return result
 
     @staticmethod
     def _normalized_guidance(

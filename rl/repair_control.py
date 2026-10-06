@@ -128,10 +128,19 @@ class RuleBasedRepairController:
         self,
         max_budget_ms: Optional[float] = None,
         max_neighborhood_size: Optional[int] = None,
+        max_trigger_severity: Optional[float] = None,
     ):
+        if (
+            max_trigger_severity is not None
+            and max_trigger_severity < 0.0
+        ):
+            raise ValueError(
+                "maximum trigger severity must be non-negative"
+            )
         self.last_signature: Optional[Tuple[Any, ...]] = None
         self.max_budget_ms = max_budget_ms
         self.max_neighborhood_size = max_neighborhood_size
+        self.max_trigger_severity = max_trigger_severity
 
     def __call__(
         self,
@@ -149,6 +158,11 @@ class RuleBasedRepairController:
             features[9] / 2.0,
             features[12],
         )
+        if (
+            self.max_trigger_severity is not None
+            and severity > self.max_trigger_severity
+        ):
+            trigger = False
         if severity >= 0.25:
             budget_ms = CONTROL_BUDGETS_MS[2]
             neighborhood = CONTROL_NEIGHBORHOODS[2]

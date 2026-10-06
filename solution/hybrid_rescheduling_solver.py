@@ -10,6 +10,7 @@ from rl.repair_control import (
     RuleBasedRepairController,
 )
 from solution.rl_solver import RLSolver
+from solution.cp_sat_solver import CPSATSolver
 from solution.heuristic_solver import WaveHeuristicSolver
 from solution.rolling_repair_solver import RollingRepairSolver
 
@@ -32,8 +33,13 @@ class HybridReschedulingSolver:
         fallback_policy: str = "actor",
         use_actor_guidance: bool = True,
         guidance_strength: float = 100.0,
+        max_trigger_severity: Optional[float] = None,
     ):
-        if fallback_policy not in {"actor", "heuristic"}:
+        if fallback_policy not in {
+            "actor",
+            "heuristic",
+            "cp_sat",
+        }:
             raise ValueError(
                 f"unsupported hybrid fallback: {fallback_policy}"
             )
@@ -57,6 +63,7 @@ class HybridReschedulingSolver:
             else RuleBasedRepairController(
                 max_budget_ms=budget_ms,
                 max_neighborhood_size=neighborhood_size,
+                max_trigger_severity=max_trigger_severity,
             )
         )
         self.repair_solver = RollingRepairSolver(
@@ -75,7 +82,17 @@ class HybridReschedulingSolver:
             fallback_solver=(
                 self.actor
                 if fallback_policy == "actor"
-                else WaveHeuristicSolver(env)
+                else (
+                    CPSATSolver(
+                        env,
+                        max_time_seconds=max(
+                            0.001,
+                            budget_ms / 1000.0,
+                        ),
+                    )
+                    if fallback_policy == "cp_sat"
+                    else WaveHeuristicSolver(env)
+                )
             ),
             guidance_strength=guidance_strength,
         )
@@ -121,5 +138,19 @@ class ActorFallbackRepairSolver(HybridReschedulingSolver):
             env,
             fallback_policy="actor",
             use_actor_guidance=False,
+            **kwargs,
+        )
+
+
+class StrongFallbackGuidedRepairSolver(
+    HybridReschedulingSolver
+):
+    """Actor guidance layered on the route-aware CP-SAT baseline."""
+
+    def __init__(self, env: CarrierAircraftSchedulingEnv, **kwargs):
+        super().__init__(
+            env,
+            fallback_policy="cp_sat",
+            use_actor_guidance=True,
             **kwargs,
         )

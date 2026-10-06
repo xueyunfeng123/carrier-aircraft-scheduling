@@ -39,6 +39,7 @@ DEFAULT_SOLVERS = (
     "event_cp_sat_repair",
     "rl_fallback_cp_sat",
     "rl_guided_cp_sat",
+    "rl_guided_strong_cp_sat",
     "rl_cp_sat",
 )
 
@@ -52,16 +53,31 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
             "rl_cp_sat",
             "rl_fallback_cp_sat",
             "rl_guided_cp_sat",
+            "rl_guided_strong_cp_sat",
         }:
             for budget_ms in args.budgets_ms:
                 label = f"{solver}_b{budget_ms:g}"
                 if solver in {
                     "rl_cp_sat",
                     "rl_guided_cp_sat",
+                    "rl_guided_strong_cp_sat",
                 }:
                     label = (
                         f"{solver}_g{args.guidance_strength:g}"
                         f"_b{budget_ms:g}"
+                    )
+                if (
+                    solver
+                    in {
+                        "rl_cp_sat",
+                        "rl_fallback_cp_sat",
+                        "rl_guided_cp_sat",
+                        "rl_guided_strong_cp_sat",
+                    }
+                    and args.max_trigger_severity is not None
+                ):
+                    label += (
+                        f"_s{args.max_trigger_severity:g}"
                     )
                 options: Dict[str, Any] = {
                     "budget_ms": float(budget_ms),
@@ -76,6 +92,7 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
                     "rl_cp_sat",
                     "rl_fallback_cp_sat",
                     "rl_guided_cp_sat",
+                    "rl_guided_strong_cp_sat",
                 }:
                     options.update(
                         {
@@ -86,6 +103,9 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
                                 args.control_checkpoint
                             ),
                             "control_device": args.device,
+                            "max_trigger_severity": (
+                                args.max_trigger_severity
+                            ),
                         }
                     )
                 specs.append(
@@ -94,6 +114,25 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
                         "solver": solver,
                         "budget_ms": float(budget_ms),
                         "options": options,
+                    }
+                )
+        elif solver == "adaptive_rl_cp":
+            for budget_ms in args.budgets_ms:
+                specs.append(
+                    {
+                        "label": (
+                            f"adaptive_rl_cp_b{budget_ms:g}"
+                        ),
+                        "solver": solver,
+                        "budget_ms": float(budget_ms),
+                        "options": {
+                            "checkpoint": args.rl_checkpoint,
+                            "device": args.device,
+                            "deterministic": True,
+                            "max_time_seconds": (
+                                float(budget_ms) / 1000.0
+                            ),
+                        },
                     }
                 )
         elif solver == "cp_sat":
@@ -602,6 +641,11 @@ def main() -> None:
         default=100.0,
     )
     parser.add_argument(
+        "--max-trigger-severity",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--scope",
         choices=("current_wave", "two_waves", "affected"),
         default="two_waves",
@@ -628,9 +672,11 @@ def main() -> None:
         solver
         in {
             "rl",
+            "adaptive_rl_cp",
             "rl_cp_sat",
             "rl_fallback_cp_sat",
             "rl_guided_cp_sat",
+            "rl_guided_strong_cp_sat",
         }
         for solver in args.solvers
     ) and not Path(args.rl_checkpoint).is_file():
@@ -662,9 +708,11 @@ def main() -> None:
         solver
         in {
             "rl",
+            "adaptive_rl_cp",
             "rl_cp_sat",
             "rl_fallback_cp_sat",
             "rl_guided_cp_sat",
+            "rl_guided_strong_cp_sat",
         }
         for solver in args.solvers
     ):
