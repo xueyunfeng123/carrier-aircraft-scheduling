@@ -86,6 +86,7 @@ def run_episode(
         "sortie_completion_rate": metrics["sortie_completion_rate"],
         "group_metrics": metrics["group_metrics"],
         "cbs_replan": metrics["cbs_replan"],
+        "disruptions": metrics["disruptions"],
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
         "missed_sortie_records": env.get_missed_sortie_records(),
@@ -119,6 +120,11 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         args,
         "cbs_max_expanded_nodes",
         DEFAULT_CONFIG["cbs_max_expanded_nodes"],
+    )
+    config["disruption_profile"] = getattr(
+        args,
+        "disruption_profile",
+        DEFAULT_CONFIG["disruption_profile"],
     )
     config["num_ammo_transport_vehicles"] = args.num_ammo_transport_vehicles
     config["num_lower_weapon_lifts"] = args.num_lower_weapon_lifts
@@ -163,6 +169,10 @@ def write_runs_csv(path: str, results: List[Dict[str, Any]]) -> None:
                 ),
                 "sortie_completion_rate": f"{result['sortie_completion_rate']:.6f}",
                 "total_reward": f"{result['total_reward']:.6f}",
+                "disruption_profile": result["disruptions"]["profile"],
+                "disruptions_scheduled": result["disruptions"]["scheduled"],
+                "disruptions_started": result["disruptions"]["started"],
+                "disruptions_ended": result["disruptions"]["ended"],
                 "A_sorties": result["group_metrics"]["A"]["sorties_completed"],
                 "A_missed": result["group_metrics"]["A"]["missed_sorties"],
                 "B_sorties": result["group_metrics"]["B"]["sorties_completed"],
@@ -212,6 +222,11 @@ def main() -> None:
         "--cbs-max-expanded-nodes",
         type=int,
         default=DEFAULT_CONFIG["cbs_max_expanded_nodes"],
+    )
+    parser.add_argument(
+        "--disruption-profile",
+        choices=("none", "light", "medium", "heavy"),
+        default=DEFAULT_CONFIG["disruption_profile"],
     )
     parser.add_argument("--simulation-duration", type=float, default=DEFAULT_EVALUATION_DURATION)
     parser.add_argument("--wave-interval", type=float, default=DEFAULT_EVALUATION_WAVE_INTERVAL)
