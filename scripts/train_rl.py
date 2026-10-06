@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import multiprocessing
 import random
 import statistics
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 try:
@@ -103,6 +105,8 @@ def main() -> None:
     parser.add_argument("--num-lower-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_lower_weapon_lifts"])
     parser.add_argument("--num-upper-weapon-lifts", type=int, default=DEFAULT_CONFIG["num_upper_weapon_lifts"])
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--eval-device", type=str, default="cpu")
+    parser.add_argument("--eval-workers", type=int, default=1)
     parser.add_argument("--checkpoint", type=str, default="checkpoints/rl_policy.pt")
     parser.add_argument("--init-checkpoint", type=str, default="")
     parser.add_argument("--total-updates", type=int, default=200)
@@ -185,6 +189,8 @@ def main() -> None:
     parser.add_argument("--eval-runs", type=int, default=DEFAULT_EVALUATION_RUNS)
     parser.add_argument("--save-every", type=int, default=10)
     args = parser.parse_args()
+    if args.eval_workers < 1:
+        parser.error("--eval-workers must be positive")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -565,7 +571,8 @@ def main() -> None:
             validation_configs,
             args.checkpoint,
             validation_seeds,
-            args.device,
+            args.eval_device,
+            workers=args.eval_workers,
         )
         score = robust_checkpoint_score(eval_stats)
         if score > best_score:
@@ -1104,25 +1111,30 @@ def evaluate_policy(
     checkpoint: str,
     seeds: Sequence[int],
     device: str,
+    workers: int = 1,
 ) -> Dict[str, Any]:
-    scenario_results = [
-        (
-            config,
-            run_episode(
-                "rl",
-                config,
-                seed=seed,
-                max_steps=100000,
-                solver_options={
-                    "checkpoint": checkpoint,
-                    "device": device,
-                    "deterministic": True,
-                },
-            ),
-        )
+    tasks = [
+        {
+            "config": config,
+            "checkpoint": checkpoint,
+            "seed": seed,
+            "device": device,
+        }
         for config in configs
         for seed in seeds
     ]
+    if workers == 1:
+        scenario_results = [
+            evaluate_policy_case(task) for task in tasks
+        ]
+    else:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            scenario_results = list(
+                executor.map(evaluate_policy_case, tasks)
+            )
     results = [result for _, result in scenario_results]
     completed = [
         item["total_sorties_completed"]
@@ -1174,6 +1186,24 @@ def evaluate_policy(
         },
         "completed_by_scenario": completed_by_scenario,
     }
+
+
+def evaluate_policy_case(
+    task: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    config = dict(task["config"])
+    result = run_episode(
+        "rl",
+        config,
+        seed=int(task["seed"]),
+        max_steps=100000,
+        solver_options={
+            "checkpoint": str(task["checkpoint"]),
+            "device": str(task["device"]),
+            "deterministic": True,
+        },
+    )
+    return config, result
 
 
 def scenario_key(
