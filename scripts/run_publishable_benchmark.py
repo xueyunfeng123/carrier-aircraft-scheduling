@@ -54,11 +54,23 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
             "rl_guided_cp_sat",
         }:
             for budget_ms in args.budgets_ms:
+                label = f"{solver}_b{budget_ms:g}"
+                if solver in {
+                    "rl_cp_sat",
+                    "rl_guided_cp_sat",
+                }:
+                    label = (
+                        f"{solver}_g{args.guidance_strength:g}"
+                        f"_b{budget_ms:g}"
+                    )
                 options: Dict[str, Any] = {
                     "budget_ms": float(budget_ms),
                     "neighborhood_size": args.neighborhood_size,
                     "horizon_waves": args.horizon_waves,
                     "scope": args.scope,
+                    "guidance_strength": (
+                        args.guidance_strength
+                    ),
                 }
                 if solver in {
                     "rl_cp_sat",
@@ -78,7 +90,7 @@ def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
                     )
                 specs.append(
                     {
-                        "label": f"{solver}_b{budget_ms:g}",
+                        "label": label,
                         "solver": solver,
                         "budget_ms": float(budget_ms),
                         "options": options,
@@ -584,6 +596,11 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--neighborhood-size", type=int, default=32)
     parser.add_argument("--horizon-waves", type=int, default=2)
+    parser.add_argument(
+        "--guidance-strength",
+        type=float,
+        default=100.0,
+    )
     parser.add_argument(
         "--scope",
         choices=("current_wave", "two_waves", "affected"),

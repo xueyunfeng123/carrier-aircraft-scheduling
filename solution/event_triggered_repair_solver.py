@@ -18,6 +18,7 @@ class EventTriggeredRepairSolver(RollingRepairSolver):
         neighborhood_size: int = 20,
         horizon_waves: int = 2,
         scope: str = "two_waves",
+        guidance_strength: float = 100.0,
     ):
         controller = RuleBasedRepairController(
             max_budget_ms=budget_ms,
@@ -31,4 +32,5 @@ class EventTriggeredRepairSolver(RollingRepairSolver):
             scope=scope,
             control_provider=controller,
             fallback_solver=WaveHeuristicSolver(env),
+            guidance_strength=guidance_strength,
         )

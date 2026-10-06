@@ -364,6 +364,11 @@ def main() -> None:
         default=2,
     )
     parser.add_argument(
+        "--repair-guidance-strength",
+        type=float,
+        default=100.0,
+    )
+    parser.add_argument(
         "--repair-scope",
         choices=("current_wave", "two_waves", "affected"),
         default="two_waves",
@@ -395,6 +400,9 @@ def main() -> None:
             "neighborhood_size": args.repair_neighborhood_size,
             "horizon_waves": args.repair_horizon_waves,
             "scope": args.repair_scope,
+            "guidance_strength": (
+                args.repair_guidance_strength
+            ),
         }
     elif args.solver == "rl":
         solver_options = {
@@ -420,6 +428,9 @@ def main() -> None:
             "neighborhood_size": args.repair_neighborhood_size,
             "horizon_waves": args.repair_horizon_waves,
             "scope": args.repair_scope,
+            "guidance_strength": (
+                args.repair_guidance_strength
+            ),
         }
     results = [
         run_episode(

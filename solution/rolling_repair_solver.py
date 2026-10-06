@@ -104,6 +104,7 @@ class RollingRepairSolver:
         control_provider: Optional[ControlProvider] = None,
         guidance_provider: Optional[GuidanceProvider] = None,
         fallback_solver: Optional[Any] = None,
+        guidance_strength: float = 100.0,
     ):
         self.env = env
         self.default_control = RepairControl(
@@ -119,7 +120,10 @@ class RollingRepairSolver:
             if fallback_solver is not None
             else WaveHeuristicSolver(env)
         )
-        self.repair_model = CPSATRepairModel(env)
+        self.repair_model = CPSATRepairModel(
+            env,
+            guidance_strength=guidance_strength,
+        )
         self.telemetry = RepairTelemetry()
         self.last_plan: Optional[RepairPlan] = None
         self.incumbent_starts: Dict[ActionKey, int] = {}
@@ -200,6 +204,11 @@ class RollingRepairSolver:
             control,
             incumbent_starts=self.incumbent_starts,
             guidance_scores=guidance,
+        )
+        plan.deadline_missed = (
+            plan.deadline_missed
+            or (time.perf_counter() - started) * 1000.0
+            > control.budget_ms
         )
         self.last_plan = plan
         self.telemetry.solve_latencies_ms.append(plan.solve_ms)

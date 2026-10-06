@@ -206,6 +206,15 @@ class DynamicDisruptionTest(unittest.TestCase):
                 "aircraft_failure",
             }
         ]
+        failure_targets = [
+            spec.target
+            for spec in aircraft_disruptions
+            if spec.kind == "aircraft_failure"
+        ]
+        self.assertEqual(
+            len(failure_targets),
+            len(set(failure_targets)),
+        )
 
         for index, first in enumerate(aircraft_disruptions):
             for second in aircraft_disruptions[index + 1 :]:

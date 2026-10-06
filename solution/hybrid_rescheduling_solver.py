@@ -31,6 +31,7 @@ class HybridReschedulingSolver:
         deterministic: bool = True,
         fallback_policy: str = "actor",
         use_actor_guidance: bool = True,
+        guidance_strength: float = 100.0,
     ):
         if fallback_policy not in {"actor", "heuristic"}:
             raise ValueError(
@@ -68,6 +69,7 @@ class HybridReschedulingSolver:
             guidance_provider=(
                 (lambda _: self.actor.action_pair_scores())
                 if self.use_actor_guidance
+                and guidance_strength > 0.0
                 else None
             ),
             fallback_solver=(
@@ -75,6 +77,7 @@ class HybridReschedulingSolver:
                 if fallback_policy == "actor"
                 else WaveHeuristicSolver(env)
             ),
+            guidance_strength=guidance_strength,
         )
 
     def choose_action(self) -> Optional[Dict[str, Any]]:

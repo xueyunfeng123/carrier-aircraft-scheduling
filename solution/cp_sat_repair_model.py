@@ -93,6 +93,7 @@ class CPSATRepairModel:
         self,
         env: CarrierAircraftSchedulingEnv,
         time_scale: int = 10,
+        guidance_strength: float = 100.0,
     ):
         try:
             from ortools.sat.python import cp_model
@@ -102,9 +103,14 @@ class CPSATRepairModel:
             ) from exc
         if time_scale < 1:
             raise ValueError("time_scale must be positive")
+        if guidance_strength < 0.0:
+            raise ValueError(
+                "guidance strength must be non-negative"
+            )
         self.env = env
         self.cp_model = cp_model
         self.time_scale = int(time_scale)
+        self.guidance_strength = float(guidance_strength)
         self.priority = PriorityRuleSolver(env, "edd")
 
     def solve(
@@ -509,7 +515,7 @@ class CPSATRepairModel:
                 int(
                     round(
                         1000.0
-                        + 100.0 * guidance
+                        + self.guidance_strength * guidance
                     )
                 ),
             )

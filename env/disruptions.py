@@ -162,6 +162,8 @@ def build_disruption_schedule(
         len(candidates["vehicle_outage"]) < vehicle_count
         or len(candidates["runway_closure"]) < runway_count
         or len(candidates["aircraft_hold"]) < aircraft_count
+        or len(candidates["aircraft_failure"])
+        < len(settings["failure_ranks"]) * 3
     ):
         raise ValueError(
             "compound disruption profile has insufficient targets "
@@ -171,6 +173,7 @@ def build_disruption_schedule(
     disruption_id = 0
     shock_centers = (0.25, 0.50, 0.75)
     previous_end = 0.0
+    used_failure_targets = set()
     for center_fraction in shock_centers:
         center = horizon * center_fraction
         jitter = rng.uniform(-0.03, 0.03) * horizon
@@ -190,18 +193,22 @@ def build_disruption_schedule(
         rng.shuffle(vehicle_targets)
         rng.shuffle(runway_targets)
         rng.shuffle(aircraft_targets)
-        selected_aircraft = aircraft_targets[:aircraft_count]
         failure_ranks = set(settings.get("failure_ranks", ()))
-        failure_targets = [
-            target
-            for rank, target in enumerate(selected_aircraft)
-            if rank in failure_ranks
-        ]
-        hold_targets = [
-            target
-            for rank, target in enumerate(selected_aircraft)
-            if rank not in failure_ranks
-        ]
+        if is_compound:
+            failure_targets = [
+                target
+                for target in aircraft_targets
+                if target not in used_failure_targets
+            ][: len(failure_ranks)]
+            used_failure_targets.update(failure_targets)
+            hold_targets = [
+                target
+                for target in aircraft_targets
+                if target not in failure_targets
+            ][: aircraft_count - len(failure_targets)]
+        else:
+            failure_targets = []
+            hold_targets = aircraft_targets[:aircraft_count]
         selected_targets = (
             (
                 "vehicle_outage",
