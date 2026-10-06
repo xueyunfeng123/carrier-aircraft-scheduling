@@ -27,6 +27,7 @@ from env.project_deck_graph import (
     build_project_deck_layout,
 )
 from env.scenario import PROJECT_CORE_PROFILE, build_project_core_profile
+from env.scenario_tape import ScenarioTape, SemanticKey
 from env.traffic_planner import SpaceTimeTrafficPlanner, TimedRoute
 
 
@@ -186,6 +187,20 @@ class CarrierAircraftSchedulingEnv:
         if seed is not None:
             self.rng.seed(seed)
             self.disruption_rng.seed(int(seed) + 1_000_003)
+            self.scenario_seed = int(seed)
+        elif not hasattr(self, "scenario_seed"):
+            self.scenario_seed = 0
+        self.scenario_tape = (
+            ScenarioTape(
+                seed=(
+                    self.scenario_seed
+                    + int(self.config["scenario_tape_seed_offset"])
+                ),
+                version=int(self.config["scenario_tape_version"]),
+            )
+            if bool(self.config["scenario_tape_enabled"])
+            else None
+        )
 
         self.time = 0.0
         self.event_sequence = 0
@@ -735,6 +750,11 @@ class CarrierAircraftSchedulingEnv:
                 ),
                 "active_at_end": len(self.active_disruptions),
             },
+            "scenario_tape": (
+                self.scenario_tape.metadata()
+                if self.scenario_tape is not None
+                else {"enabled": False}
+            ),
         }
 
     def _advance_time_to_next_event(self) -> Tuple[float, Dict[str, int]]:
@@ -829,7 +849,9 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.is_airborne = False
                 aircraft.launch_status = 0
                 aircraft.inspection_status = 0
-                aircraft.arm_quantity_required = self._sample_arm_quantity()
+                aircraft.arm_quantity_required = self._sample_arm_quantity(
+                    event.aircraft_id
+                )
                 self.free_recovery_channels += 1
                 completed["recovery"] += 1
             elif event.event_type == "park_done":
@@ -1026,6 +1048,7 @@ class CarrierAircraftSchedulingEnv:
         duration = self._sample_duration(
             "inspection_time_mean",
             "inspection_time_std",
+            self._scenario_key(aircraft_id, "inspection"),
         ) * self.service_time_multipliers["inspection"]
         vehicle, travel_duration = self._dispatch_service_vehicle(
             "inspection",
@@ -1061,15 +1084,25 @@ class CarrierAircraftSchedulingEnv:
         aircraft = self.aircraft[aircraft_id]
         arm_multiplier = self.service_time_multipliers["arm"]
         first_stage_duration = arm_multiplier * (
-            self._sample_ammo_extract_time()
+            self._sample_ammo_extract_time(
+                self._scenario_key(aircraft_id, "ammo_extract")
+            )
             + self._sample_duration(
                 "lower_lift_time_mean",
                 "lower_lift_time_std",
+                self._scenario_key(aircraft_id, "lower_lift"),
             )
         )
         deck_stage_duration = arm_multiplier * (
-            self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
-            + self._sample_arming_duration(aircraft.arm_quantity_required)
+            self._sample_duration(
+                "upper_lift_time_mean",
+                "upper_lift_time_std",
+                self._scenario_key(aircraft_id, "upper_lift"),
+            )
+            + self._sample_arming_duration(
+                aircraft.arm_quantity_required,
+                self._scenario_key(aircraft_id, "arming_unit"),
+            )
         )
         aircraft.arm_status = 1
         aircraft.arm_stage = 1
@@ -1172,8 +1205,15 @@ class CarrierAircraftSchedulingEnv:
         operation_duration = self.service_time_multipliers[
             "arm"
         ] * (
-            self._sample_duration("upper_lift_time_mean", "upper_lift_time_std")
-            + self._sample_arming_duration(aircraft.arm_quantity_required)
+            self._sample_duration(
+                "upper_lift_time_mean",
+                "upper_lift_time_std",
+                self._scenario_key(aircraft_id, "upper_lift"),
+            )
+            + self._sample_arming_duration(
+                aircraft.arm_quantity_required,
+                self._scenario_key(aircraft_id, "arming_unit"),
+            )
         )
         duration = operation_duration + vehicle_wait
         aircraft.arm_stage = 3
@@ -2523,34 +2563,80 @@ class CarrierAircraftSchedulingEnv:
         record.update(details)
         self.event_log.append(record)
 
-    def _sample_duration(self, mean_key: str, std_key: str) -> float:
+    def _scenario_key(
+        self,
+        aircraft_id: int,
+        operation: str,
+    ) -> SemanticKey:
+        return (
+            "project_core",
+            int(aircraft_id),
+            int(self.aircraft[aircraft_id].sorties_completed),
+            str(operation),
+        )
+
+    def _sample_duration(
+        self,
+        mean_key: str,
+        std_key: str,
+        semantic_key: Optional[SemanticKey] = None,
+    ) -> float:
         mean = float(self.config[mean_key])
         std = float(self.config[std_key])
         min_process_time = float(self.config["min_process_time"])
         if std <= 0:
             return max(min_process_time, mean)
-        return max(min_process_time, self.rng.gauss(mean, std))
+        if self.scenario_tape is not None and semantic_key is not None:
+            value = self.scenario_tape.normal(
+                semantic_key,
+                mean,
+                std,
+            )
+        else:
+            value = self.rng.gauss(mean, std)
+        return max(min_process_time, value)
 
-    def _sample_ammo_extract_time(self) -> float:
+    def _sample_ammo_extract_time(
+        self,
+        semantic_key: Optional[SemanticKey] = None,
+    ) -> float:
         low = float(self.config["ammo_extract_time_min"])
         high = float(self.config["ammo_extract_time_max"])
         if high < low:
             raise ValueError("ammo_extract_time_max must be >= ammo_extract_time_min")
+        if self.scenario_tape is not None and semantic_key is not None:
+            return self.scenario_tape.uniform(
+                semantic_key,
+                low,
+                high,
+            )
         return self.rng.uniform(low, high)
 
-    def _sample_arming_duration(self, quantity: int) -> float:
+    def _sample_arming_duration(
+        self,
+        quantity: int,
+        semantic_key: Optional[SemanticKey] = None,
+    ) -> float:
         mean = float(self.config["arm_unit_time_mean"])
         variance = float(self.config["arm_unit_time_variance"])
         if variance < 0:
             raise ValueError("arm_unit_time_variance must be non-negative")
         std = math.sqrt(variance)
         min_process_time = float(self.config["min_process_time"])
-        return sum(
-            max(min_process_time, self.rng.gauss(mean, std))
-            for _ in range(max(0, int(quantity)))
-        )
+        values = []
+        for draw_index in range(max(0, int(quantity))):
+            if self.scenario_tape is not None and semantic_key is not None:
+                value = self.scenario_tape.normal(
+                    (*semantic_key, draw_index),
+                    mean,
+                    std,
+                )
+            else:
+                value = self.rng.gauss(mean, std)
+            values.append(max(min_process_time, value))
+        return sum(values)
 
-    def _sample_arm_quantity(self) -> int:
+    def _sample_arm_quantity(self, aircraft_id: int) -> int:
         values = list(self.config["arm_quantity_values"])
         probs = list(self.config["arm_quantity_probs"])
         if len(values) != len(probs):
@@ -2559,6 +2645,12 @@ class CarrierAircraftSchedulingEnv:
         if total_prob <= 0:
             raise ValueError("arm_quantity_probs must sum to a positive value")
 
+        if self.scenario_tape is not None:
+            return self.scenario_tape.categorical(
+                self._scenario_key(aircraft_id, "arm_quantity"),
+                values,
+                probs,
+            )
         draw = self.rng.random() * total_prob
         cumulative = 0.0
         for value, prob in zip(values, probs):

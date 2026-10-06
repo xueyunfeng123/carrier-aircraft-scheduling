@@ -87,6 +87,7 @@ def run_episode(
         "group_metrics": metrics["group_metrics"],
         "cbs_replan": metrics["cbs_replan"],
         "disruptions": metrics["disruptions"],
+        "scenario_tape": metrics["scenario_tape"],
         "timing_records": env.get_aircraft_timing_records(),
         "wave_records": env.get_wave_records(),
         "missed_sortie_records": env.get_missed_sortie_records(),
