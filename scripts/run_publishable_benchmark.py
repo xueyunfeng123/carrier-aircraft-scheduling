@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import os
 import platform
 import subprocess
 import sys
@@ -12,6 +13,15 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
+
+EVALUATION_INTRAOP_THREADS = 1
+THREAD_ENVIRONMENT = {
+    "OMP_NUM_THREADS": str(EVALUATION_INTRAOP_THREADS),
+    "MKL_NUM_THREADS": str(EVALUATION_INTRAOP_THREADS),
+    "OPENBLAS_NUM_THREADS": str(EVALUATION_INTRAOP_THREADS),
+    "NUMEXPR_NUM_THREADS": str(EVALUATION_INTRAOP_THREADS),
+}
+os.environ.update(THREAD_ENVIRONMENT)
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
 from env.config import DEFAULT_CONFIG
@@ -42,6 +52,17 @@ DEFAULT_SOLVERS = (
     "rl_guided_strong_cp_sat",
     "rl_cp_sat",
 )
+
+
+def configure_evaluation_threads() -> None:
+    import torch
+
+    torch.set_num_threads(EVALUATION_INTRAOP_THREADS)
+    try:
+        torch.set_num_interop_threads(EVALUATION_INTRAOP_THREADS)
+    except RuntimeError:
+        # A reused interpreter may already have initialized inter-op work.
+        pass
 
 
 def build_solver_specs(args: argparse.Namespace) -> List[Dict[str, Any]]:
@@ -584,6 +605,8 @@ def repository_provenance() -> Dict[str, Any]:
             "platform": platform.platform(),
             "machine": platform.machine(),
             "processor": platform.processor(),
+            "intraop_threads": EVALUATION_INTRAOP_THREADS,
+            "thread_environment": dict(THREAD_ENVIRONMENT),
         },
         "dependencies": {
             package: importlib.metadata.version(package)
@@ -593,6 +616,7 @@ def repository_provenance() -> Dict[str, Any]:
 
 
 def main() -> None:
+    configure_evaluation_threads()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--phase",
@@ -750,7 +774,8 @@ def main() -> None:
             )
     else:
         with ProcessPoolExecutor(
-            max_workers=args.workers
+            max_workers=args.workers,
+            initializer=configure_evaluation_threads,
         ) as executor:
             completed = list(executor.map(run_case, tasks))
 
