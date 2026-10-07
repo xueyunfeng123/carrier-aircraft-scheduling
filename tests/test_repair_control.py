@@ -287,7 +287,7 @@ class RepairControlTest(unittest.TestCase):
             "cp_sat",
         )
 
-    def test_risk_aware_hybrid_preserves_actor_with_relief(
+    def test_risk_aware_hybrid_forces_cp_at_severe_boundary(
         self,
     ) -> None:
         env = self._env(
@@ -296,6 +296,54 @@ class RepairControlTest(unittest.TestCase):
             simulation_duration=135.0,
         )
         env.config["disruption_profile"] = "compound_heavy"
+        solver = RiskAwareAdaptiveRLCPSolver(
+            env,
+            checkpoint="",
+            max_time_seconds=0.01,
+        )
+
+        action = solver.choose_action()
+
+        self.assertIsNotNone(action)
+        self.assertTrue(solver.force_cp_regime)
+        self.assertEqual(
+            solver.get_decision_records()[0]["source"],
+            "cp_sat",
+        )
+
+    def test_risk_aware_hybrid_forces_cp_at_elevated_boundary(
+        self,
+    ) -> None:
+        env = self._env(
+            disruption_profile="none",
+            wave_interval=57.5,
+            simulation_duration=115.0,
+        )
+        env.config["disruption_profile"] = "compound_medium"
+        solver = RiskAwareAdaptiveRLCPSolver(
+            env,
+            checkpoint="",
+            max_time_seconds=0.01,
+        )
+
+        action = solver.choose_action()
+
+        self.assertIsNotNone(action)
+        self.assertTrue(solver.force_cp_regime)
+        self.assertEqual(
+            solver.get_decision_records()[0]["source"],
+            "cp_sat",
+        )
+
+    def test_risk_aware_hybrid_preserves_actor_after_relief(
+        self,
+    ) -> None:
+        env = self._env(
+            disruption_profile="none",
+            wave_interval=62.5,
+            simulation_duration=125.0,
+        )
+        env.config["disruption_profile"] = "compound_medium"
         solver = RiskAwareAdaptiveRLCPSolver(
             env,
             checkpoint="",

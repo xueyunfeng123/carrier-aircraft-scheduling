@@ -154,6 +154,8 @@ class RiskAwareAdaptiveRLCPSolver(AdaptiveRLCPSolver):
         deterministic: bool = True,
         max_time_seconds: float = 0.05,
         pressure_interval_threshold: float = 47.5,
+        elevated_risk_multiplier: float = 1.5,
+        elevated_relief_interval: float = 57.5,
         severe_risk_multiplier: float = 2.0,
         severe_relief_interval: float = 67.5,
     ):
@@ -166,6 +168,12 @@ class RiskAwareAdaptiveRLCPSolver(AdaptiveRLCPSolver):
         )
         self.pressure_interval_threshold = float(
             pressure_interval_threshold
+        )
+        self.elevated_risk_multiplier = float(
+            elevated_risk_multiplier
+        )
+        self.elevated_relief_interval = float(
+            elevated_relief_interval
         )
         self.severe_risk_multiplier = float(
             severe_risk_multiplier
@@ -191,9 +199,14 @@ class RiskAwareAdaptiveRLCPSolver(AdaptiveRLCPSolver):
                 1.0,
             )
         )
-        return (
+        if (
             risk_multiplier >= self.severe_risk_multiplier
-            and interval < self.severe_relief_interval
+            and interval <= self.severe_relief_interval
+        ):
+            return True
+        return (
+            risk_multiplier >= self.elevated_risk_multiplier
+            and interval <= self.elevated_relief_interval
         )
 
     def get_telemetry(self) -> Dict[str, Any]:
@@ -204,6 +217,12 @@ class RiskAwareAdaptiveRLCPSolver(AdaptiveRLCPSolver):
                 "force_cp_regime": self.force_cp_regime,
                 "pressure_interval_threshold": (
                     self.pressure_interval_threshold
+                ),
+                "elevated_risk_multiplier": (
+                    self.elevated_risk_multiplier
+                ),
+                "elevated_relief_interval": (
+                    self.elevated_relief_interval
                 ),
                 "severe_risk_multiplier": (
                     self.severe_risk_multiplier
