@@ -44,6 +44,10 @@ waves         = 12
 
 所有超参数必须在 selection/dev 阶段冻结后再进入 final。
 
+实际 final 主矩阵固定为 50 ms compute cap，包含 `heuristic`、`cp_sat`、
+`rl`、`adaptive_rl_cp` 和 `risk_aware_rl_cp`。10/200 ms 预算曲线仅使用
+dev seeds，不与 final 主检验混合。
+
 ## 4. Manifest
 
 `run_publishable_benchmark.py` 为每次实验写入 `manifest.json`，内容包括：
@@ -142,7 +146,7 @@ sorties_disrupted >= sorties_none - 1
 
 禁止把多个波次或同一 seed 下的多个 load/profile 当成独立样本。
 
-建议的 final 成功门槛需在 final 运行前冻结，例如：
+开发期建议的强成功门槛为：
 
 ```text
 平均提升 >= 1.0 架
@@ -150,6 +154,10 @@ win rate >= 70%
 Holm-adjusted p < 0.05
 p95 latency 满足目标预算
 ```
+
+final 的统计显著性门槛达到，但平均效应 `+0.111` 未达到 `+1.0` 架，
+端到端 P95 也未达到 50 ms。因此结果只支持小效应统计优势，不支持强
+工程优势。
 
 ## 8. 运行命令
 
@@ -199,10 +207,36 @@ python -m scripts.train_repair_control \
 
 ## 9. 解释边界
 
-- 10/50/200 ms 是端到端 soft deadline。OR-Tools 设置剩余求解时间，但
-  当前没有进程级硬中断；超时解不执行。
-- soft deadline 使临界预算下的 fallback 路径受机器抖动影响；正式实验
+- 10/50/200 ms 是 CP-SAT 的 solver compute cap，不是端到端 deadline。
+  模型构建、actor 推理、动作重验证和环境空间规划不包含在该 cap 内。
+- compute cap 使临界预算下的搜索路径受机器抖动影响；正式实验
   必须固定硬件、进程数和后台负载，并保留 manifest 中的运行环境信息。
 - Manifest 可以证明代码、依赖和模型内容，但 dirty worktree 的结果应在
   commit 后重跑，才能作为最终论文证据。
 - 单 seed 结果只用于 smoke/debug，不报告显著性。
+
+## 10. 已执行 Final
+
+冻结设置：
+
+```text
+commit          250bc33f5a9de2baa99194cbe27ad685e77c32a6
+checkpoint SHA  dd8e93d44caac52036b3d869a2a23f45e1fa2b8b31ea114fd03c66313e7d9b5f
+final seeds     70001-70050
+scenarios       1000
+paired runs     5000
+workers         96
+intraop threads 1
+manifest SHA    16e50dd4f5970d2da5624b37ff2db79ce8043915b4b66354150e84591bb6e92e
+```
+
+主候选 `risk_aware_rl_cp_b50` 相对 `cp_sat_b50`：
+
+| 范围 | 平均差 | 95% CI | W/T/L | sign p |
+|---|---:|---:|---:|---:|
+| dynamic-only | +0.1107 | [0.0613, 0.1600] | 35/2/13 | 0.00209 |
+| all | +0.1110 | [0.0570, 0.1660] | 35/5/10 | 0.000247 |
+
+完整 profile、多基线、CVaR、恢复和延迟结果位于
+`outputs/final_main_50/summary.csv` 与
+`outputs/final_main_50/comparison.csv`。
