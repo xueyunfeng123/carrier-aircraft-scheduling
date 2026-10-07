@@ -98,9 +98,8 @@ class PriorityRuleSolver:
                     "fuel",
                     aircraft_id,
                 )
-                + self.env.service_time_multipliers["fuel"] * (
-                    1.0 - self.env.aircraft[aircraft_id].fuel_level
-                ) / float(config["fuel_rate_per_minute"])
+                + self.env.service_time_multipliers["fuel"]
+                * self.env._expected_fuel_duration(aircraft_id)
             )
         if high_level == ACTION_INSPECTION:
             return (

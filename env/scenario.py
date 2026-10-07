@@ -5,11 +5,12 @@ from __future__ import annotations
 import heapq
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 
 PROJECT_CORE_PROFILE = "project_core"
+HAITIAN_2026_PROFILE = "haitian_2026"
 YOON_2023_PROFILE = "paper_yoon_2023"
 
 
@@ -530,15 +531,19 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
     inspection_resources = (("inspection_vehicle", 1),)
     arm_resources = (("arm_vehicle", 1),)
     if personnel_enabled:
-        fuel_resources += (
-            ("personnel", int(config["fuel_personnel_required"])),
+        fuel_personnel = int(config["fuel_personnel_required"])
+        inspection_personnel = int(
+            config["inspection_personnel_required"]
         )
-        inspection_resources += (
-            ("personnel", int(config["inspection_personnel_required"])),
-        )
-        arm_resources += (
-            ("personnel", int(config["arm_personnel_required"])),
-        )
+        arm_personnel = int(config["arm_personnel_required"])
+        if fuel_personnel > 0:
+            fuel_resources += (("personnel", fuel_personnel),)
+        if inspection_personnel > 0:
+            inspection_resources += (
+                ("personnel", inspection_personnel),
+            )
+        if arm_personnel > 0:
+            arm_resources += (("personnel", arm_personnel),)
     refuel_duration = (
         1.0 - float(config["post_sortie_fuel_level"])
     ) / float(config["fuel_rate_per_minute"])
@@ -664,8 +669,110 @@ def build_project_core_profile(config: Mapping[str, Any]) -> ScenarioProfile:
     )
 
 
+def build_haitian_2026_profile(config: Mapping[str, Any]) -> ScenarioProfile:
+    """Describe the executable alignment and its explicit assumptions."""
+
+    base = build_project_core_profile(config)
+    fuel_resources = (
+        ("fuel_station", 1),
+        ("personnel", int(config["fuel_personnel_required"])),
+    )
+    processes = []
+    for process in base.processes:
+        if process.name == "inspection":
+            continue
+        if process.name == "fueling":
+            processes.append(
+                replace(
+                    process,
+                    duration=DurationDistribution(
+                        "normal",
+                        (
+                            float(config["fuel_time_mean"]),
+                            float(config["fuel_time_std"]),
+                        ),
+                    ),
+                    required_resources=fuel_resources,
+                )
+            )
+            continue
+        processes.append(process)
+    processes.append(
+        ProcessSpec(
+            "aircraft_lift_transfer",
+            "movement",
+            DurationDistribution(
+                "deterministic",
+                (float(config["hangar_transfer_time"]),),
+            ),
+            ("aircraft_lift",),
+            (("aircraft_lift", 1),),
+        )
+    )
+    return replace(
+        base,
+        name=HAITIAN_2026_PROFILE,
+        source="proj/doc/前置约束.md (海天杯需求材料)",
+        fidelity="executable_alignment_with_declared_assumptions",
+        processes=tuple(processes),
+        policy_rules=(
+            "45 deck aircraft are arranged as two 20-aircraft wave loads plus five reserves",
+            "four physical launch positions feed one serial one-aircraft-per-minute launch channel",
+            "twenty fixed fuel stations each cover two mission parking positions",
+            "fueling and arming may overlap when personnel and equipment are available",
+            "routine inspection is not required after each sortie",
+            "aircraft failures use replacement inventory and two shared aircraft lifts",
+            "sea state controls launch delay and recovery retry probability",
+        ),
+        unresolved_parameters=(
+            "fueling and weapon-lift normal-distribution dispersion",
+            "meaning of two-position fuel-station coverage for five reserve spots",
+            "exact aircraft failure process behind the stated 100 flight-hour frequency",
+            "decay parameter for the published 1-6 hour repair-time range",
+            "recovery retry delay and fuel consumption after a bolter",
+            "launch/recovery interference for launch positions in the landing area",
+            "aircraft-lift coverage graph and hangar transfer time",
+            "arming personnel demand, assembly capacity, ammunition compatibility, and inventory",
+            "personnel fatigue and post-shift rest rules",
+        ),
+        metadata=(
+            ("reported_kpi", "completed_sorties_within_horizon"),
+            ("fleet_model", "shared_dynamic"),
+            ("deck_aircraft", int(config["num_aircraft"])),
+            ("total_inventory", int(config["num_total_aircraft"])),
+            (
+                "reserve_aircraft",
+                int(config["num_aircraft"])
+                - 2 * int(config["group_size"]),
+            ),
+            ("active_support_posts", int(config["num_personnel"])),
+            ("fuel_time_std_assumption_minutes", float(config["fuel_time_std"])),
+            (
+                "weapon_lift_std_assumption_minutes",
+                float(config["lower_lift_time_std"]),
+            ),
+            (
+                "repair_decay_scale_assumption_minutes",
+                float(config["repair_time_decay_scale"]),
+            ),
+            (
+                "recovery_retry_delay_assumption_minutes",
+                float(config["recovery_retry_delay"]),
+            ),
+            (
+                "hangar_transfer_assumption_minutes",
+                float(config["hangar_transfer_time"]),
+            ),
+        ),
+    )
+
+
 def list_scenario_profiles() -> Tuple[str, ...]:
-    return (PROJECT_CORE_PROFILE, YOON_2023_PROFILE)
+    return (
+        PROJECT_CORE_PROFILE,
+        HAITIAN_2026_PROFILE,
+        YOON_2023_PROFILE,
+    )
 
 
 def summarize_profiles(profiles: Iterable[ScenarioProfile]) -> Dict[str, Dict[str, Any]]:

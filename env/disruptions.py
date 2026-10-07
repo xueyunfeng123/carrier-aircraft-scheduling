@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Union
@@ -201,10 +202,16 @@ def build_disruption_schedule(
                 if target not in used_failure_targets
             ][: len(failure_ranks)]
             used_failure_targets.update(failure_targets)
+            excluded_hold_targets = (
+                used_failure_targets
+                if str(config.get("scenario_profile"))
+                == "haitian_2026"
+                else set(failure_targets)
+            )
             hold_targets = [
                 target
                 for target in aircraft_targets
-                if target not in failure_targets
+                if target not in excluded_hold_targets
             ][: aircraft_count - len(failure_targets)]
         else:
             failure_targets = []
@@ -245,12 +252,53 @@ def build_disruption_schedule(
                     )
                 )
                 disruption_id += 1
+    if str(config.get("scenario_profile")) == "haitian_2026":
+        schedule = [
+            (
+                DisruptionSpec(
+                    disruption_id=spec.disruption_id,
+                    kind=spec.kind,
+                    target=spec.target,
+                    start_time=spec.start_time,
+                    end_time=min(
+                        horizon,
+                        spec.start_time
+                        + _sample_repair_duration(config, rng),
+                    ),
+                    multiplier=spec.multiplier,
+                )
+                if spec.kind == "aircraft_failure"
+                else spec
+            )
+            for spec in schedule
+        ]
     return sorted(
         schedule,
         key=lambda item: (
             item.start_time,
             item.disruption_id,
         ),
+    )
+
+
+def _sample_repair_duration(
+    config: Dict[str, Any],
+    rng: random.Random,
+) -> float:
+    minimum = float(config["repair_time_min"])
+    maximum = float(config["repair_time_max"])
+    scale = float(config["repair_time_decay_scale"])
+    if not 0.0 <= minimum <= maximum or scale <= 0.0:
+        raise ValueError(
+            "repair range and decay scale must be positive"
+        )
+    if minimum == maximum:
+        return minimum
+    span = maximum - minimum
+    truncated_mass = 1.0 - math.exp(-span / scale)
+    draw = rng.random()
+    return minimum - scale * math.log(
+        max(1e-15, 1.0 - draw * truncated_mass)
     )
 
 

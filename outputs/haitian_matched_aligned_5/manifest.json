@@ -1,0 +1,202 @@
+{
+  "base_config": {
+    "aircraft_failure_mtbf_flight_hours": 100.0,
+    "alpha": 1.0,
+    "ammo_extract_time_max": 10.0,
+    "ammo_extract_time_min": 5.0,
+    "arm_personnel_required": 0,
+    "arm_quantity_probs": [
+      0.3,
+      0.4,
+      0.2,
+      0.1
+    ],
+    "arm_quantity_values": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "arm_unit_time_mean": 5.0,
+    "arm_unit_time_variance": 2.0,
+    "beta_arm": 0.2,
+    "beta_fuel": 0.2,
+    "beta_inspection": 0.2,
+    "beta_launch": 1.0,
+    "beta_recovery": 0.1,
+    "cbs_max_expanded_nodes": 2000,
+    "cbs_replan_enabled": false,
+    "deck_edge_travel_time": 1.0,
+    "disruption_profile": "none",
+    "disruptions": [],
+    "eta_idle": 1.0,
+    "fuel_duration_model": "normal",
+    "fuel_personnel_required": 4,
+    "fuel_rate_per_minute": 0.05,
+    "fuel_service_mode": "fixed_station",
+    "fuel_station_coverage": 2,
+    "fuel_station_covered_spots": 40,
+    "fuel_time_mean": 20.0,
+    "fuel_time_std": 3.0,
+    "group_size": 20,
+    "hangar_transfer_time": 5.0,
+    "initial_fuel_level": 1.0,
+    "inspection_personnel_required": 0,
+    "inspection_time_mean": 8.0,
+    "inspection_time_std": 1.0,
+    "invalid_action_penalty": 5.0,
+    "launch_time": 1.0,
+    "lower_lift_time_mean": 3.0,
+    "lower_lift_time_std": 0.5,
+    "min_process_time": 0.1,
+    "num_aircraft": 45,
+    "num_aircraft_lifts": 2,
+    "num_ammo_transport_vehicles": 10,
+    "num_arm_vehicles": 10,
+    "num_fuel_servers": 20,
+    "num_inspection_vehicles": 0,
+    "num_launch_channels": 1,
+    "num_launch_positions": 4,
+    "num_lower_weapon_lifts": 6,
+    "num_parking_spots": 45,
+    "num_personnel": 50,
+    "num_recovery_channels": 1,
+    "num_total_aircraft": 75,
+    "num_tow_vehicles": 10,
+    "num_upper_weapon_lifts": 4,
+    "parking_base_transfer_time": 2.0,
+    "parking_interference_clearance": 2.0,
+    "parking_ring_time_step": 1.0,
+    "personnel_scheduling_enabled": true,
+    "post_sortie_fuel_level": 0.2,
+    "recovery_retry_delay": 1.0,
+    "recovery_time": 1.0,
+    "repair_time_decay_scale": 120.0,
+    "repair_time_max": 360.0,
+    "repair_time_min": 60.0,
+    "routine_inspection_enabled": false,
+    "runway_interference_clearance": 0.5,
+    "scenario_profile": "haitian_2026",
+    "scenario_tape_enabled": false,
+    "scenario_tape_seed_offset": 0,
+    "scenario_tape_version": 1,
+    "sea_state": 3.0,
+    "sea_state_effects_enabled": true,
+    "simulation_duration": 720.0,
+    "spatial_graph_enabled": true,
+    "stochastic_flight_failures_enabled": true,
+    "terminal_reward": 100.0,
+    "traffic_planning_horizon": 180.0,
+    "traffic_time_step": 1.0,
+    "upper_lift_time_mean": 3.0,
+    "upper_lift_time_std": 0.5,
+    "wave_interval": 120.0
+  },
+  "base_config_sha256": "30ea97ba9d837e4c3845eb2dbb1bce64872e3d7ae21784de7ffd57f15a0c23c3",
+  "budgets_ms": [
+    50.0
+  ],
+  "manifest_sha256": "0a8fe7a472c2d7f77f33a44315ee79f939ca06593a88907f05de8365d94434f4",
+  "phase": "dev",
+  "profiles": [
+    "none",
+    "compound_light",
+    "compound_medium",
+    "compound_heavy"
+  ],
+  "protocol_version": 1,
+  "provenance": {
+    "checkpoints": [
+      {
+        "checkpoint_type": "actor_policy",
+        "path": "checkpoints/rl_multiload_bc.pt",
+        "sha256": "cb0b9c2bcaaee1cd54346b2adbf6db6f99499c8e72ae9bd499a7b3bd95aacd5b",
+        "training_seeds": [
+          30001,
+          30002,
+          30003,
+          30004
+        ],
+        "validation_seeds": [
+          31001,
+          31002
+        ]
+      }
+    ],
+    "dependencies": {
+      "numpy": "2.5.3",
+      "ortools": "9.15.6755",
+      "torch": "2.5.1"
+    },
+    "git_commit": "250bc33f5a9de2baa99194cbe27ad685e77c32a6",
+    "git_diff_sha256": "1b0cd9848da63913c6edbe376d733e2867e35351a0fb123f0128fea15efd14a2",
+    "git_dirty": true,
+    "git_status_sha256": "c578c0ecaf0ffccbfc4d2c7222a539936e843cfaa083a34dbb22102a35b90c36",
+    "runtime": {
+      "intraop_threads": 1,
+      "machine": "x86_64",
+      "platform": "Linux-6.8.0-106-generic-x86_64-with-glibc2.35",
+      "processor": "x86_64",
+      "python": "3.12.4 | packaged by Anaconda, Inc. | (main, Jun 18 2024, 15:12:24) [GCC 11.2.0]",
+      "thread_environment": {
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1"
+      }
+    },
+    "untracked_source_files": {
+      "tests/test_haitian_alignment.py": "99a706082c156cc1fb285561724383c36983eb10a078bed2596f66fa8dbdfd49"
+    },
+    "untracked_source_sha256": "fc0e35eeb1e6b477bab79cf889635e1be0adf89dbfd13eeb530bdf47a73bacfb",
+    "workspace_dirty": true
+  },
+  "seeds": [
+    43001,
+    43002,
+    43003,
+    43004,
+    43005
+  ],
+  "solver_specs": [
+    {
+      "budget_ms": 0.0,
+      "label": "heuristic",
+      "options": {},
+      "solver": "heuristic"
+    },
+    {
+      "budget_ms": 50.0,
+      "label": "cp_sat_b50",
+      "options": {
+        "max_time_seconds": 0.05
+      },
+      "solver": "cp_sat"
+    },
+    {
+      "budget_ms": 0.0,
+      "label": "rl",
+      "options": {
+        "checkpoint": "checkpoints/rl_multiload_bc.pt",
+        "deterministic": true,
+        "device": "cpu"
+      },
+      "solver": "rl"
+    },
+    {
+      "budget_ms": 50.0,
+      "label": "risk_aware_rl_cp_b50",
+      "options": {
+        "checkpoint": "checkpoints/rl_multiload_bc.pt",
+        "deterministic": true,
+        "device": "cpu",
+        "max_time_seconds": 0.05
+      },
+      "solver": "risk_aware_rl_cp"
+    }
+  ],
+  "wave_intervals": [
+    57.5
+  ],
+  "waves": 12
+}

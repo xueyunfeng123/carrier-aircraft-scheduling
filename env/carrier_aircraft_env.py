@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from env.cbs_planner import CBSExpansionLimitError, RouteRequest
-from env.config import ACTION_TO_INDEX, DEFAULT_CONFIG, HIGH_LEVEL_ACTIONS
+from env.config import ACTION_TO_INDEX, HIGH_LEVEL_ACTIONS, resolve_config
 from env.disruptions import (
     DisruptionSpec,
     build_disruption_schedule,
@@ -26,7 +26,12 @@ from env.project_deck_graph import (
     ProjectDeckLayout,
     build_project_deck_layout,
 )
-from env.scenario import PROJECT_CORE_PROFILE, build_project_core_profile
+from env.scenario import (
+    HAITIAN_2026_PROFILE,
+    PROJECT_CORE_PROFILE,
+    build_haitian_2026_profile,
+    build_project_core_profile,
+)
 from env.scenario_tape import ScenarioTape, SemanticKey
 from env.traffic_planner import SpaceTimeTrafficPlanner, TimedRoute
 
@@ -93,6 +98,7 @@ class AircraftRecord:
     taxi_end: Optional[float] = None
     assigned_launch_wave: Optional[int] = None
     recovery_due_wave: Optional[int] = None
+    recovery_attempts: int = 0
 
     def as_vector(self) -> List[float]:
         return [
@@ -127,6 +133,7 @@ class ServiceVehicleRecord:
     service_type: str
     node_id: str
     busy_aircraft_id: Optional[int] = None
+    covered_spot_ids: Tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,9 +155,7 @@ class CarrierAircraftSchedulingEnv:
     """Event-triggered scheduling environment for carrier aircraft operations."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        self.config = dict(DEFAULT_CONFIG)
-        if config:
-            self.config.update(config)
+        self.config = resolve_config(config)
         self.num_aircraft = int(self.config["num_aircraft"])
         self.num_total_aircraft = int(
             self.config["num_total_aircraft"]
@@ -170,13 +175,22 @@ class CarrierAircraftSchedulingEnv:
         if self.num_parking_spots < self.num_aircraft:
             raise ValueError("num_parking_spots must be at least num_aircraft")
         scenario_profile = str(self.config.get("scenario_profile", PROJECT_CORE_PROFILE))
-        if scenario_profile != PROJECT_CORE_PROFILE:
-            raise ValueError(
-                "CarrierAircraftSchedulingEnv currently executes only the "
-                f"{PROJECT_CORE_PROFILE!r} profile; use YoonSortieGenerationEnv "
-                "for the paper baseline"
+        if scenario_profile == PROJECT_CORE_PROFILE:
+            self.scenario_profile = build_project_core_profile(
+                self.config
             )
-        self.scenario_profile = build_project_core_profile(self.config)
+        elif scenario_profile == HAITIAN_2026_PROFILE:
+            self.scenario_profile = build_haitian_2026_profile(
+                self.config
+            )
+        else:
+            raise ValueError(
+                "CarrierAircraftSchedulingEnv executes only "
+                f"{PROJECT_CORE_PROFILE!r} and "
+                f"{HAITIAN_2026_PROFILE!r}; use "
+                "YoonSortieGenerationEnv for the paper baseline"
+            )
+        self._validate_config()
         self.spatial_graph_enabled = bool(self.config["spatial_graph_enabled"])
         self.deck_layout: Optional[ProjectDeckLayout] = None
         if self.spatial_graph_enabled:
@@ -192,6 +206,46 @@ class CarrierAircraftSchedulingEnv:
         self.rng = random.Random()
         self.disruption_rng = random.Random()
         self.reset()
+
+    def _validate_config(self) -> None:
+        fuel_model = str(self.config["fuel_duration_model"])
+        if fuel_model not in {"fuel_level_rate", "normal"}:
+            raise ValueError(
+                f"unknown fuel duration model: {fuel_model}"
+            )
+        fuel_mode = str(self.config["fuel_service_mode"])
+        if fuel_mode not in {"mobile", "fixed_station"}:
+            raise ValueError(
+                f"unknown fuel service mode: {fuel_mode}"
+            )
+        if int(self.config["num_aircraft_lifts"]) < 1:
+            raise ValueError("num_aircraft_lifts must be positive")
+        if int(self.config["num_launch_channels"]) < 1:
+            raise ValueError("num_launch_channels must be positive")
+        if int(self.config["num_launch_positions"]) < 1:
+            raise ValueError("num_launch_positions must be positive")
+        if fuel_mode == "fixed_station":
+            coverage = int(self.config["fuel_station_coverage"])
+            covered_spots = int(
+                self.config["fuel_station_covered_spots"]
+            )
+            if coverage < 1 or covered_spots < 1:
+                raise ValueError(
+                    "fixed fuel-station coverage must be positive"
+                )
+            if covered_spots > self.num_parking_spots:
+                raise ValueError(
+                    "fuel_station_covered_spots exceeds parking capacity"
+                )
+            if (
+                int(self.config["num_fuel_servers"]) * coverage
+                < covered_spots
+            ):
+                raise ValueError(
+                    "fuel stations cannot cover configured parking spots"
+                )
+        if float(self.config["sea_state"]) < 0.0:
+            raise ValueError("sea_state must be non-negative")
 
     def reset(self, seed: Optional[int] = None) -> Dict[str, Any]:
         if seed is not None:
@@ -296,6 +350,7 @@ class CarrierAircraftSchedulingEnv:
 
         self.free_recovery_channels = int(self.config["num_recovery_channels"])
         self.free_launch_channels = int(self.config["num_launch_channels"])
+        self.free_aircraft_lifts = int(self.config["num_aircraft_lifts"])
         self.free_fuel_servers = int(self.config["num_fuel_servers"])
         self.free_inspection_vehicles = int(
             self.config["num_inspection_vehicles"]
@@ -329,6 +384,8 @@ class CarrierAircraftSchedulingEnv:
         self.failure_physical_by_disruption: Dict[int, int] = {}
         self.failure_spot_by_disruption: Dict[int, int] = {}
         self.failure_transfer_started: set[int] = set()
+        self.failure_outbound_lift_held: set[int] = set()
+        self.replacement_lift_held: set[int] = set()
         self.repair_release_reached: set[int] = set()
         self.replacement_in_transit: Dict[int, Tuple[int, int]] = {}
         self.failure_metrics: Dict[str, int] = {
@@ -345,6 +402,16 @@ class CarrierAircraftSchedulingEnv:
             self.config,
             self.disruption_rng,
             [vehicle.vehicle_id for vehicle in self.service_vehicles],
+        )
+        self.next_runtime_disruption_id = (
+            max(
+                (
+                    spec.disruption_id
+                    for spec in self.disruption_schedule
+                ),
+                default=-1,
+            )
+            + 1
         )
         self.disruption_metrics: Dict[str, Any] = {
             "profile": str(self.config["disruption_profile"]),
@@ -433,6 +500,7 @@ class CarrierAircraftSchedulingEnv:
             "aircraft": [record.as_vector() for record in self.aircraft],
             "resources": {
                 "recovery_channels": self.free_recovery_channels,
+                "aircraft_lifts": self.free_aircraft_lifts,
                 "fuel_servers": min(
                     self.free_fuel_servers,
                     len(self._available_service_vehicles("fuel")),
@@ -490,6 +558,9 @@ class CarrierAircraftSchedulingEnv:
                     "vehicle_id": vehicle.vehicle_id,
                     "service_type": vehicle.service_type,
                     "node_id": vehicle.node_id,
+                    "covered_spot_ids": list(
+                        vehicle.covered_spot_ids
+                    ),
                     "busy_aircraft_id": vehicle.busy_aircraft_id,
                     "available": (
                         vehicle.busy_aircraft_id is None
@@ -607,6 +678,7 @@ class CarrierAircraftSchedulingEnv:
                 and self.time
                 + route[2]
                 + float(self.config["launch_time"])
+                + self._maximum_sea_launch_delay()
                 <= deadline
             ]
             return [runway_id for _, runway_id in sorted(options)]
@@ -880,6 +952,16 @@ class CarrierAircraftSchedulingEnv:
                     event.aircraft_id
                 )
                 continue
+            if event.event_type == "recovery_retry_ready":
+                aircraft = self.aircraft[event.aircraft_id]
+                aircraft.recovery_status = 0
+                self.free_recovery_channels += 1
+                self._log_event(
+                    "recovery_retry_ready",
+                    event.aircraft_id,
+                    attempt=aircraft.recovery_attempts,
+                )
+                continue
             if event.event_type == "clearance_done":
                 self._log_event("clearance_done")
                 continue
@@ -917,8 +999,17 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.pending_recovery = False
                 aircraft.recovery_due_wave = None
                 aircraft.is_airborne = False
+                aircraft.recovery_attempts = 0
                 aircraft.launch_status = 0
-                aircraft.inspection_status = 0
+                aircraft.inspection_status = (
+                    0
+                    if bool(
+                        self.config[
+                            "routine_inspection_enabled"
+                        ]
+                    )
+                    else 2
+                )
                 aircraft.arm_quantity_required = self._sample_arm_quantity(
                     event.aircraft_id
                 )
@@ -979,7 +1070,10 @@ class CarrierAircraftSchedulingEnv:
                     launch_position=reservation.target,
                 )
                 self._push_event(
-                    self.time + float(self.config["launch_time"]),
+                    self.time
+                    + self._sample_launch_operation_duration(
+                        event.aircraft_id
+                    ),
                     "launch_done",
                     event.aircraft_id,
                 )
@@ -1010,12 +1104,23 @@ class CarrierAircraftSchedulingEnv:
                 aircraft.fuel_level = float(
                     self.config["post_sortie_fuel_level"]
                 )
-                aircraft.inspection_status = 0
+                aircraft.inspection_status = (
+                    0
+                    if bool(
+                        self.config[
+                            "routine_inspection_enabled"
+                        ]
+                    )
+                    else 2
+                )
                 aircraft.arm_status = 0
                 aircraft.arm_stage = 0
                 aircraft.arm_quantity_required = 0
                 self.free_launch_channels += 1
                 completed["launch"] += 1
+                self._schedule_runtime_aircraft_failure(
+                    event.aircraft_id
+                )
 
         for aircraft_id, aircraft in enumerate(self.aircraft):
             if (
@@ -1043,6 +1148,34 @@ class CarrierAircraftSchedulingEnv:
         target_spot_id: Optional[int] = None,
     ) -> None:
         aircraft = self.aircraft[aircraft_id]
+        attempt = aircraft.recovery_attempts
+        aircraft.recovery_attempts += 1
+        if not self._sample_recovery_success(
+            aircraft_id,
+            attempt,
+        ):
+            aircraft.recovery_status = 1
+            aircraft.recovery_start = self.time
+            self.free_recovery_channels -= 1
+            retry_delay = float(
+                self.config["recovery_retry_delay"]
+            )
+            duration = (
+                float(self.config["recovery_time"])
+                + retry_delay
+            )
+            self._log_event(
+                "recovery_bolter",
+                aircraft_id,
+                attempt=attempt + 1,
+                retry_delay=retry_delay,
+            )
+            self._push_event(
+                self.time + duration,
+                "recovery_retry_ready",
+                aircraft_id,
+            )
+            return
         movement_duration = 0.0
         if self.spatial_graph_enabled:
             reservation = self._reserve_recovery_route(
@@ -1081,13 +1214,10 @@ class CarrierAircraftSchedulingEnv:
         vehicle_id: Optional[str] = None,
     ) -> None:
         aircraft = self.aircraft[aircraft_id]
-        rate = float(self.config["fuel_rate_per_minute"])
-        if rate <= 0:
-            raise ValueError("fuel_rate_per_minute must be positive")
-        duration = max(
-            float(self.config["min_process_time"]),
-            (1.0 - aircraft.fuel_level) / rate,
-        ) * self.service_time_multipliers["fuel"]
+        duration = (
+            self._sample_fuel_duration(aircraft_id)
+            * self.service_time_multipliers["fuel"]
+        )
         vehicle, travel_duration = self._dispatch_service_vehicle(
             "fuel",
             aircraft_id,
@@ -1250,7 +1380,10 @@ class CarrierAircraftSchedulingEnv:
         else:
             aircraft.launch_start = self.time
             self._push_event(
-                self.time + float(self.config["launch_time"]),
+                self.time
+                + self._sample_launch_operation_duration(
+                    aircraft_id
+                ),
                 "launch_done",
                 aircraft_id,
             )
@@ -1319,6 +1452,7 @@ class CarrierAircraftSchedulingEnv:
             if (
                 aircraft.pending_recovery
                 and aircraft.recovery_status == 0
+                and self._sea_operations_allowed()
                 and (
                     not self.spatial_graph_enabled
                     or self._find_recovery_route(aircraft_id) is not None
@@ -1332,6 +1466,20 @@ class CarrierAircraftSchedulingEnv:
                 and aircraft.parking_status == 2
                 and aircraft.recovery_status == 2
                 and aircraft.fuel_status == 0
+                and (
+                    str(self.config["fuel_service_mode"])
+                    != "fixed_station"
+                    or self._spot_has_fixed_fuel_station(
+                        aircraft.spot_id
+                    )
+                )
+                and (
+                    str(self.config["fuel_service_mode"])
+                    != "fixed_station"
+                    or self._fixed_fuel_station_available(
+                        aircraft.spot_id
+                    )
+                )
             ):
                 candidates["F"].append(aircraft_id)
             if (
@@ -1363,6 +1511,7 @@ class CarrierAircraftSchedulingEnv:
             if (
                 launch_capacity_available
                 and launch_runway_available
+                and self._sea_operations_allowed()
                 and not aircraft.is_airborne
                 and aircraft.parking_status == 2
                 and aircraft.fuel_status == 2
@@ -1376,6 +1525,7 @@ class CarrierAircraftSchedulingEnv:
                 and self.time
                 + launch_movement_duration
                 + float(self.config["launch_time"])
+                + self._maximum_sea_launch_delay()
                 <= min(
                     (self.current_wave_index + 1) * self.wave_interval,
                     self.simulation_duration,
@@ -1589,6 +1739,8 @@ class CarrierAircraftSchedulingEnv:
         for disruption_id, aircraft_id in tuple(
             self.failure_slot_by_disruption.items()
         ):
+            if self.free_aircraft_lifts <= 0:
+                break
             if disruption_id in self.failure_transfer_started:
                 continue
             if not self._aircraft_can_leave_deck(aircraft_id):
@@ -1616,6 +1768,8 @@ class CarrierAircraftSchedulingEnv:
         disruption_id: int,
         aircraft_id: int,
     ) -> None:
+        if self.free_aircraft_lifts <= 0:
+            return
         aircraft = self.aircraft[aircraft_id]
         spot_id = aircraft.spot_id
         if spot_id < 0:
@@ -1623,6 +1777,8 @@ class CarrierAircraftSchedulingEnv:
                 "failed deck aircraft has no parking position"
             )
         self.failure_transfer_started.add(disruption_id)
+        self.failure_outbound_lift_held.add(disruption_id)
+        self.free_aircraft_lifts -= 1
         self.failure_spot_by_disruption[disruption_id] = spot_id
         aircraft.lifecycle_status = "to_hangar"
         if self.deck_occupancy is not None and self.deck_layout is not None:
@@ -1661,6 +1817,7 @@ class CarrierAircraftSchedulingEnv:
         if (
             disruption_id in self.replacement_in_transit
             or not self.hangar_ready_aircraft_ids
+            or self.free_aircraft_lifts <= 0
         ):
             return
         replacement_id = min(self.hangar_ready_aircraft_ids)
@@ -1695,6 +1852,8 @@ class CarrierAircraftSchedulingEnv:
             replacement_id,
             spot_id,
         )
+        self.replacement_lift_held.add(disruption_id)
+        self.free_aircraft_lifts -= 1
         transfer_time = float(self.config["hangar_transfer_time"])
         self._push_event(
             self.time + transfer_time,
@@ -1714,6 +1873,9 @@ class CarrierAircraftSchedulingEnv:
         self,
         disruption_id: int,
     ) -> None:
+        if disruption_id in self.failure_outbound_lift_held:
+            self.failure_outbound_lift_held.remove(disruption_id)
+            self.free_aircraft_lifts += 1
         aircraft_id = self.failure_slot_by_disruption[disruption_id]
         physical_id = self.failure_physical_by_disruption[
             disruption_id
@@ -1735,12 +1897,17 @@ class CarrierAircraftSchedulingEnv:
             disruption_id=disruption_id,
             physical_aircraft_id=physical_id,
         )
+        self._start_replacement_transfer(disruption_id)
+        self._try_start_pending_failure_transfers()
         self._finish_repair_if_possible(disruption_id)
 
     def _handle_replacement_transfer_done(
         self,
         disruption_id: int,
     ) -> None:
+        if disruption_id in self.replacement_lift_held:
+            self.replacement_lift_held.remove(disruption_id)
+            self.free_aircraft_lifts += 1
         aircraft_id = self.failure_slot_by_disruption[disruption_id]
         replacement_id, spot_id = self.replacement_in_transit.pop(
             disruption_id
@@ -1783,6 +1950,7 @@ class CarrierAircraftSchedulingEnv:
             physical_aircraft_id=replacement_id,
             target_spot_id=spot_id,
         )
+        self._try_start_pending_failure_transfers()
 
     def _finish_repair_if_possible(
         self,
@@ -2020,6 +2188,11 @@ class CarrierAircraftSchedulingEnv:
             for spot_id, occupied_by in enumerate(self.parking_occupancy)
             if occupied_by is None
             and self._landing_target_available(spot_id)
+            and (
+                str(self.config["fuel_service_mode"])
+                != "fixed_station"
+                or self._spot_has_fixed_fuel_station(spot_id)
+            )
         ]
         if target_spot_id is not None:
             free_spot_ids = [
@@ -2185,7 +2358,11 @@ class CarrierAircraftSchedulingEnv:
             if route is None:
                 return float("inf")
             movement_duration = self._route_duration_values(route[2])
-        return movement_duration + float(self.config["launch_time"])
+        return (
+            movement_duration
+            + float(self.config["launch_time"])
+            + self._expected_sea_launch_delay()
+        )
 
     def _expected_recovery_duration(self, aircraft_id: int) -> float:
         movement_duration = 0.0
@@ -2257,7 +2434,37 @@ class CarrierAircraftSchedulingEnv:
         depot_spots = (0, 10, 23, 35)
         for service_type, count in specifications:
             for index in range(count):
-                spot_id = depot_spots[index % len(depot_spots)]
+                covered_spot_ids: Tuple[int, ...] = ()
+                if (
+                    service_type == "fuel"
+                    and str(self.config["fuel_service_mode"])
+                    == "fixed_station"
+                ):
+                    coverage = int(
+                        self.config["fuel_station_coverage"]
+                    )
+                    covered_limit = int(
+                        self.config[
+                            "fuel_station_covered_spots"
+                        ]
+                    )
+                    first_spot = index * coverage
+                    covered_spot_ids = tuple(
+                        spot_id
+                        for spot_id in range(
+                            first_spot,
+                            min(first_spot + coverage, covered_limit),
+                        )
+                    )
+                    spot_id = (
+                        covered_spot_ids[0]
+                        if covered_spot_ids
+                        else 0
+                    )
+                else:
+                    spot_id = depot_spots[
+                        index % len(depot_spots)
+                    ]
                 spot_id = min(spot_id, self.num_parking_spots - 1)
                 node_id = (
                     self.deck_layout.parking_node(spot_id)
@@ -2269,9 +2476,29 @@ class CarrierAircraftSchedulingEnv:
                         vehicle_id=f"{service_type}_{index}",
                         service_type=service_type,
                         node_id=node_id,
+                        covered_spot_ids=covered_spot_ids,
                     )
                 )
         return vehicles
+
+    def _spot_has_fixed_fuel_station(self, spot_id: int) -> bool:
+        if spot_id < 0:
+            return False
+        return any(
+            spot_id in vehicle.covered_spot_ids
+            for vehicle in self.service_vehicles
+            if vehicle.service_type == "fuel"
+        )
+
+    def _fixed_fuel_station_available(self, spot_id: int) -> bool:
+        return any(
+            spot_id in vehicle.covered_spot_ids
+            and vehicle.busy_aircraft_id is None
+            and vehicle.vehicle_id
+            not in self.unavailable_vehicle_ids
+            for vehicle in self.service_vehicles
+            if vehicle.service_type == "fuel"
+        )
 
     def _available_service_vehicles(
         self,
@@ -2723,6 +2950,11 @@ class CarrierAircraftSchedulingEnv:
         aircraft = self.aircraft[aircraft_id]
         if aircraft.spot_id < 0:
             raise RuntimeError("service vehicle target has no parking spot")
+        stationary_fuel = (
+            service_type == "fuel"
+            and str(self.config["fuel_service_mode"])
+            == "fixed_station"
+        )
 
         def travel_time(vehicle: ServiceVehicleRecord) -> float:
             route = self._preview_service_vehicle_route(
@@ -2730,7 +2962,10 @@ class CarrierAircraftSchedulingEnv:
                 aircraft_id,
             )
             if route is None:
-                if self.deck_layout is not None:
+                if (
+                    self.deck_layout is not None
+                    or stationary_fuel
+                ):
                     return float("inf")
                 return self._spot_transfer_time(aircraft.spot_id)
             return route.duration
@@ -2742,7 +2977,11 @@ class CarrierAircraftSchedulingEnv:
         duration = travel_time(vehicle)
         if not math.isfinite(duration):
             raise RuntimeError(f"no conflict-free route for {vehicle.vehicle_id}")
-        if self.traffic_planner is not None and self.deck_layout is not None:
+        if (
+            not stationary_fuel
+            and self.traffic_planner is not None
+            and self.deck_layout is not None
+        ):
             target = self.deck_layout.parking_node(aircraft.spot_id)
             route = self.traffic_planner.plan(
                 vehicle.vehicle_id,
@@ -2775,6 +3014,25 @@ class CarrierAircraftSchedulingEnv:
         if aircraft.spot_id < 0:
             self._service_route_cache[cache_key] = None
             return None
+        if (
+            vehicle.service_type == "fuel"
+            and str(self.config["fuel_service_mode"])
+            == "fixed_station"
+        ):
+            if aircraft.spot_id not in vehicle.covered_spot_ids:
+                self._service_route_cache[cache_key] = None
+                return None
+            result = TimedRoute(
+                entity_id=vehicle.vehicle_id,
+                source=vehicle.node_id,
+                target=f"parking_{aircraft.spot_id}",
+                nodes=(vehicle.node_id,),
+                ticks=(0,),
+                start_time=self.time,
+                end_time=self.time,
+            )
+            self._service_route_cache[cache_key] = result
+            return result
         if self.deck_layout is None or self.traffic_planner is None:
             result = TimedRoute(
                 entity_id=vehicle.vehicle_id,
@@ -2825,8 +3083,6 @@ class CarrierAircraftSchedulingEnv:
         aircraft = self.aircraft[aircraft_id]
         if aircraft.spot_id < 0:
             return float("inf")
-        if self.deck_layout is None:
-            return self._spot_transfer_time(aircraft.spot_id)
         durations = [
             route.duration
             for vehicle in available
@@ -2850,11 +3106,16 @@ class CarrierAircraftSchedulingEnv:
             if item.vehicle_id == vehicle_id
         )
         aircraft = self.aircraft[aircraft_id]
-        vehicle.node_id = (
-            self.deck_layout.parking_node(aircraft.spot_id)
-            if self.deck_layout is not None
-            else f"parking_{aircraft.spot_id}"
-        )
+        if not (
+            service_type == "fuel"
+            and str(self.config["fuel_service_mode"])
+            == "fixed_station"
+        ):
+            vehicle.node_id = (
+                self.deck_layout.parking_node(aircraft.spot_id)
+                if self.deck_layout is not None
+                else f"parking_{aircraft.spot_id}"
+            )
         vehicle.busy_aircraft_id = None
 
     def _assign_parking_spot(self, aircraft_id: int) -> int:
@@ -2862,6 +3123,11 @@ class CarrierAircraftSchedulingEnv:
             spot_id
             for spot_id, occupied_by in enumerate(self.parking_occupancy)
             if occupied_by is None
+            and (
+                str(self.config["fuel_service_mode"])
+                != "fixed_station"
+                or self._spot_has_fixed_fuel_station(spot_id)
+            )
         ]
         if not free_spots:
             raise RuntimeError("no free parking spot available")
@@ -2985,10 +3251,254 @@ class CarrierAircraftSchedulingEnv:
         operation: str,
     ) -> SemanticKey:
         return (
-            "project_core",
+            self.scenario_profile.name,
             int(aircraft_id),
             int(self.aircraft[aircraft_id].sorties_completed),
             str(operation),
+        )
+
+    def _sample_fuel_duration(self, aircraft_id: int) -> float:
+        model = str(self.config["fuel_duration_model"])
+        if model == "normal":
+            return self._sample_duration(
+                "fuel_time_mean",
+                "fuel_time_std",
+                self._scenario_key(aircraft_id, "fuel"),
+            )
+        if model != "fuel_level_rate":
+            raise ValueError(
+                f"unknown fuel duration model: {model}"
+            )
+        rate = float(self.config["fuel_rate_per_minute"])
+        if rate <= 0.0:
+            raise ValueError("fuel_rate_per_minute must be positive")
+        return max(
+            float(self.config["min_process_time"]),
+            (1.0 - self.aircraft[aircraft_id].fuel_level)
+            / rate,
+        )
+
+    def _expected_fuel_duration(self, aircraft_id: int) -> float:
+        if str(self.config["fuel_duration_model"]) == "normal":
+            return max(
+                float(self.config["min_process_time"]),
+                float(self.config["fuel_time_mean"]),
+            )
+        rate = float(self.config["fuel_rate_per_minute"])
+        if rate <= 0.0:
+            return float("inf")
+        return max(
+            float(self.config["min_process_time"]),
+            (1.0 - self.aircraft[aircraft_id].fuel_level)
+            / rate,
+        )
+
+    def _sea_state_parameters(self) -> Tuple[float, float]:
+        if not bool(self.config["sea_state_effects_enabled"]):
+            return 1.0, 1.0
+        sea_state = float(self.config["sea_state"])
+        if sea_state <= 3.0:
+            return 1.0, 0.95
+        if sea_state <= 5.0:
+            return 0.50, 0.90
+        if sea_state <= 6.0:
+            return 0.25, 0.85
+        return 0.0, 0.0
+
+    def _sea_operations_allowed(self) -> bool:
+        launch_direct_probability, recovery_success_probability = (
+            self._sea_state_parameters()
+        )
+        return (
+            launch_direct_probability > 0.0
+            and recovery_success_probability > 0.0
+        )
+
+    def _expected_sea_launch_delay(self) -> float:
+        if not bool(self.config["sea_state_effects_enabled"]):
+            return 0.0
+        direct_probability, _ = self._sea_state_parameters()
+        if direct_probability <= 0.0:
+            return float("inf")
+        mean_delay = (1.0 / 60.0 + 30.0 / 60.0) / 2.0
+        return (1.0 - direct_probability) * mean_delay
+
+    def _maximum_sea_launch_delay(self) -> float:
+        if not bool(self.config["sea_state_effects_enabled"]):
+            return 0.0
+        direct_probability, _ = self._sea_state_parameters()
+        if direct_probability <= 0.0:
+            return float("inf")
+        return 0.0 if direct_probability >= 1.0 else 30.0 / 60.0
+
+    def _sample_launch_operation_duration(
+        self,
+        aircraft_id: int,
+    ) -> float:
+        base = float(self.config["launch_time"])
+        if not bool(self.config["sea_state_effects_enabled"]):
+            return base
+        direct_probability, _ = self._sea_state_parameters()
+        key = self._scenario_key(aircraft_id, "sea_launch")
+        if self.scenario_tape is not None:
+            direct_draw = self.scenario_tape.uniform(
+                (*key, "direct"),
+                0.0,
+                1.0,
+            )
+        else:
+            direct_draw = self.rng.random()
+        delay = 0.0
+        if direct_draw > direct_probability:
+            if self.scenario_tape is not None:
+                delay = self.scenario_tape.uniform(
+                    (*key, "delay"),
+                    1.0 / 60.0,
+                    30.0 / 60.0,
+                )
+            else:
+                delay = self.rng.uniform(
+                    1.0 / 60.0,
+                    30.0 / 60.0,
+                )
+        self._log_event(
+            "sea_launch_delay",
+            aircraft_id,
+            sea_state=float(self.config["sea_state"]),
+            delay=delay,
+        )
+        return base + delay
+
+    def _sample_recovery_success(
+        self,
+        aircraft_id: int,
+        attempt: int,
+    ) -> bool:
+        if not bool(self.config["sea_state_effects_enabled"]):
+            return True
+        _, success_probability = self._sea_state_parameters()
+        key = (
+            *self._scenario_key(aircraft_id, "sea_recovery"),
+            int(attempt),
+        )
+        if self.scenario_tape is not None:
+            draw = self.scenario_tape.uniform(key, 0.0, 1.0)
+        else:
+            draw = self.rng.random()
+        return draw <= success_probability
+
+    def _schedule_runtime_aircraft_failure(
+        self,
+        aircraft_id: int,
+    ) -> None:
+        if not bool(
+            self.config["stochastic_flight_failures_enabled"]
+        ):
+            return
+        mtbf_minutes = (
+            float(
+                self.config[
+                    "aircraft_failure_mtbf_flight_hours"
+                ]
+            )
+            * 60.0
+        )
+        if mtbf_minutes <= 0.0:
+            raise ValueError(
+                "aircraft_failure_mtbf_flight_hours must be positive"
+            )
+        key = self._scenario_key(aircraft_id, "flight_failure")
+        if self.scenario_tape is not None:
+            draw = self.scenario_tape.uniform(
+                (*key, "time"),
+                0.0,
+                1.0,
+            )
+        else:
+            draw = self.rng.random()
+        time_to_failure = -mtbf_minutes * math.log(
+            max(1e-15, 1.0 - draw)
+        )
+        aircraft = self.aircraft[aircraft_id]
+        if aircraft.recovery_due_wave is None:
+            return
+        flight_duration = max(
+            0.0,
+            aircraft.recovery_due_wave * self.wave_interval
+            - self.time,
+        )
+        start_time = self.time + time_to_failure
+        if (
+            time_to_failure >= flight_duration
+            or start_time >= self.simulation_duration
+        ):
+            return
+        repair_duration = self._sample_repair_duration(
+            (*key, "repair")
+        )
+        end_time = start_time + repair_duration
+        for spec in self.disruption_schedule:
+            if (
+                spec.kind in {"aircraft_failure", "aircraft_hold"}
+                and int(spec.target) == aircraft_id
+                and max(spec.start_time, start_time)
+                < min(spec.end_time, end_time)
+            ):
+                return
+        spec = DisruptionSpec(
+            disruption_id=self.next_runtime_disruption_id,
+            kind="aircraft_failure",
+            target=aircraft_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        self.next_runtime_disruption_id += 1
+        self.disruption_schedule.append(spec)
+        self.disruptions_by_id[spec.disruption_id] = spec
+        self.disruption_metrics["scheduled"] += 1
+        self._push_event(
+            spec.start_time,
+            "disruption_start",
+            spec.disruption_id,
+        )
+        self._push_event(
+            spec.end_time,
+            "disruption_end",
+            spec.disruption_id,
+        )
+        self._log_event(
+            "aircraft_failure_scheduled",
+            aircraft_id,
+            disruption_id=spec.disruption_id,
+            failure_time=spec.start_time,
+            repair_duration=repair_duration,
+        )
+
+    def _sample_repair_duration(
+        self,
+        semantic_key: SemanticKey,
+    ) -> float:
+        minimum = float(self.config["repair_time_min"])
+        maximum = float(self.config["repair_time_max"])
+        scale = float(self.config["repair_time_decay_scale"])
+        if not 0.0 <= minimum <= maximum or scale <= 0.0:
+            raise ValueError(
+                "repair range and decay scale must be positive"
+            )
+        if minimum == maximum:
+            return minimum
+        if self.scenario_tape is not None:
+            draw = self.scenario_tape.uniform(
+                semantic_key,
+                0.0,
+                1.0,
+            )
+        else:
+            draw = self.rng.random()
+        span = maximum - minimum
+        truncated_mass = 1.0 - math.exp(-span / scale)
+        return minimum - scale * math.log(
+            max(1e-15, 1.0 - draw * truncated_mass)
         )
 
     def _sample_duration(

@@ -399,8 +399,7 @@ def _expected_action_duration(
                 "fuel",
                 aircraft_id,
             )
-            + (1.0 - aircraft.fuel_level)
-            / float(env.config["fuel_rate_per_minute"])
+            + env._expected_fuel_duration(aircraft_id)
         )
     if action_name == "I":
         return (

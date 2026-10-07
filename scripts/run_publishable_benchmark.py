@@ -24,7 +24,7 @@ THREAD_ENVIRONMENT = {
 os.environ.update(THREAD_ENVIRONMENT)
 
 from env.carrier_aircraft_env import CarrierAircraftSchedulingEnv
-from env.config import DEFAULT_CONFIG
+from env.config import SCENARIO_CONFIG_PRESETS, resolve_config
 from env.disruptions import PROFILE_SETTINGS
 from scripts.evaluation_protocol import (
     CANONICAL_BUDGETS_MS,
@@ -635,6 +635,12 @@ def main() -> None:
         default=list(CANONICAL_PROFILES),
     )
     parser.add_argument(
+        "--scenario-profile",
+        choices=tuple(SCENARIO_CONFIG_PRESETS),
+        default="project_core",
+    )
+    parser.add_argument("--sea-state", type=float)
+    parser.add_argument(
         "--intervals",
         type=float,
         nargs="+",
@@ -726,7 +732,11 @@ def main() -> None:
         args.seeds or PHASE_SEEDS[args.phase],
         purpose="evaluation",
     )
-    base_config = dict(DEFAULT_CONFIG)
+    base_config = resolve_config(
+        {"scenario_profile": args.scenario_profile}
+    )
+    if args.sea_state is not None:
+        base_config["sea_state"] = float(args.sea_state)
     base_config["spatial_graph_enabled"] = (
         not args.disable_spatial_graph
     )

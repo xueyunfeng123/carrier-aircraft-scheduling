@@ -1,0 +1,16 @@
+profile,candidate,reference,pairs,scenario_cells,candidate_mean,reference_mean,mean_delta,ci_low,ci_high,wins,ties,losses,sign_test_p,holm_adjusted_p
+compound_heavy,risk_aware_rl_cp_b50,cp_sat_b50,5,5,82.6,82.6,0.0,0.0,0.0,0,5,0,1.0,1.0
+compound_light,risk_aware_rl_cp_b50,cp_sat_b50,5,5,82.4,81.6,0.8,0.0,2.0,2,3,0,0.5,1.0
+compound_medium,risk_aware_rl_cp_b50,cp_sat_b50,5,5,82.4,82.4,0.0,0.0,0.0,0,5,0,1.0,1.0
+none,risk_aware_rl_cp_b50,cp_sat_b50,5,5,81.2,82.2,-1.0,-1.8,0.0,1,0,4,0.375,1.0
+all,risk_aware_rl_cp_b50,cp_sat_b50,5,20,82.15,82.2,-0.05,-0.45,0.35,2,0,3,1.0,1.0
+compound_heavy,risk_aware_rl_cp_b50,rl,5,5,82.6,80.2,2.4,2.0,2.8,5,0,0,0.0625,0.9375
+compound_light,risk_aware_rl_cp_b50,rl,5,5,82.4,81.0,1.4,0.2,3.2,3,2,0,0.25,1.0
+compound_medium,risk_aware_rl_cp_b50,rl,5,5,82.4,81.0,1.4,1.0,2.2,5,0,0,0.0625,0.9375
+none,risk_aware_rl_cp_b50,rl,5,5,81.2,81.0,0.2,0.0,0.6,1,4,0,1.0,1.0
+all,risk_aware_rl_cp_b50,rl,5,20,82.15,80.8,1.35,0.95,1.85,5,0,0,0.0625,0.9375
+compound_heavy,risk_aware_rl_cp_b50,heuristic,5,5,82.6,76.2,6.4,5.6,7.0,5,0,0,0.0625,0.9375
+compound_light,risk_aware_rl_cp_b50,heuristic,5,5,82.4,76.0,6.4,5.6,7.2,5,0,0,0.0625,0.9375
+compound_medium,risk_aware_rl_cp_b50,heuristic,5,5,82.4,76.6,5.8,4.6,7.0,5,0,0,0.0625,0.9375
+none,risk_aware_rl_cp_b50,heuristic,5,5,81.2,77.6,3.6,2.4,4.8,5,0,0,0.0625,0.9375
+all,risk_aware_rl_cp_b50,heuristic,5,20,82.15,76.6,5.55,4.8,6.3,5,0,0,0.0625,0.9375

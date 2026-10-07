@@ -23,8 +23,10 @@ class ProjectDeckGraphAssumptions:
     def __post_init__(self) -> None:
         if any(size < 0 for size in self.parking_cluster_sizes):
             raise ValueError("parking-cluster sizes must be non-negative")
-        if self.launch_positions != 3:
-            raise ValueError("Haitian layout requires three launch runways")
+        if self.launch_positions not in (3, 4):
+            raise ValueError(
+                "project layout supports three or four launch positions"
+            )
         if self.edge_travel_minutes <= 0:
             raise ValueError("edge travel time must be positive")
 
@@ -72,7 +74,7 @@ def build_project_deck_layout(
 
     The source document supplies position geometry and interference rules, but
     no taxiway adjacency matrix. The graph therefore preserves its four parking
-    clusters, western landing runway, and three eastern launch runways while
+    clusters, western landing runway, and configurable launch positions while
     making the derived dual-corridor topology explicit.
     """
 
@@ -192,19 +194,26 @@ def build_project_deck_layout(
         northeast_east[-1:],
         southeast_east[-1:],
         (),
-    )
+        (),
+    )[: assumptions.launch_positions]
     landing_interference_pairs = tuple(
         pair
         for cluster_range in cluster_ranges
         for pair in _cluster_interference_pairs(cluster_range)
     )
-    runway_conflicts = ((1,), (0,), ())
+    runway_conflicts = (
+        (1,),
+        (0,),
+        (3,) if assumptions.launch_positions == 4 else (),
+        (2,),
+    )[: assumptions.launch_positions]
 
     launch_connections = (
         pathway_index[("north", 4)],
         pathway_index[("middle", 4)],
         pathway_index[("south", 4)],
-    )
+        pathway_index[("middle", 3)],
+    )[: assumptions.launch_positions]
     for index, launch_node in enumerate(launch_nodes):
         edges.append(
             LocationEdge(

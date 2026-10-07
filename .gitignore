@@ -29,3 +29,7 @@ checkpoints/*
 runs.csv
 timing.csv
 missed.csv
+
+# Keep compact benchmark evidence in Git; retain detailed traces locally.
+outputs/haitian_matched_*_5/decisions.csv
+outputs/haitian_matched_*_5/waves.csv

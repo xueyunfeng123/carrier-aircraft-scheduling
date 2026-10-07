@@ -26,8 +26,14 @@ class WaveHeuristicSolver:
     def __init__(self, env: CarrierAircraftSchedulingEnv):
         self.env = env
         self._fuel_mean = (
-            1.0 - float(env.config["post_sortie_fuel_level"])
-        ) / float(env.config["fuel_rate_per_minute"])
+            float(env.config["fuel_time_mean"])
+            if str(env.config["fuel_duration_model"]) == "normal"
+            else (
+                1.0
+                - float(env.config["post_sortie_fuel_level"])
+            )
+            / float(env.config["fuel_rate_per_minute"])
+        )
         self._arm_unit_mean = float(env.config["arm_unit_time_mean"])
 
     def choose_action(self) -> Optional[Dict[str, Any]]:
@@ -303,11 +309,13 @@ class WaveHeuristicSolver:
             + expected_quantity * self._arm_unit_mean
         )
 
-    def _fuel_work(self, aircraft) -> float:
+    def _fuel_work(self, aircraft_id: int) -> float:
+        aircraft = self.env.aircraft[aircraft_id]
         if aircraft.fuel_status == 0:
-            return self.env.service_time_multipliers["fuel"] * (
-                1.0 - aircraft.fuel_level
-            ) / float(self.env.config["fuel_rate_per_minute"])
+            return (
+                self.env.service_time_multipliers["fuel"]
+                * self.env._expected_fuel_duration(aircraft_id)
+            )
         if aircraft.fuel_status == 1:
             return aircraft.fuel_remaining
         return 0.0
@@ -319,7 +327,7 @@ class WaveHeuristicSolver:
             if aircraft.fuel_status == 0
             else 0.0
         )
-        return travel + self._fuel_work(aircraft)
+        return travel + self._fuel_work(aircraft_id)
 
     def _inspection_work_for(self, aircraft_id: int) -> float:
         return (
