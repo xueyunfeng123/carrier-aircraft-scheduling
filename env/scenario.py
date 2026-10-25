@@ -721,7 +721,7 @@ def build_haitian_2026_profile(config: Mapping[str, Any]) -> ScenarioProfile:
             "twenty fixed fuel stations each cover two mission parking positions",
             "fueling and arming may overlap when personnel and equipment are available",
             "routine inspection is not required after each sortie",
-            "aircraft failures use replacement inventory and two shared aircraft lifts",
+            "failed aircraft enter hangar repair and return through two shared aircraft lifts",
             "sea state controls launch delay and recovery retry probability",
         ),
         unresolved_parameters=(
@@ -739,7 +739,7 @@ def build_haitian_2026_profile(config: Mapping[str, Any]) -> ScenarioProfile:
             ("reported_kpi", "completed_sorties_within_horizon"),
             ("fleet_model", "shared_dynamic"),
             ("deck_aircraft", int(config["num_aircraft"])),
-            ("total_inventory", int(config["num_total_aircraft"])),
+            ("total_inventory", int(config["num_aircraft"])),
             (
                 "reserve_aircraft",
                 int(config["num_aircraft"])

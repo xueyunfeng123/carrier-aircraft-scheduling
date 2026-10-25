@@ -19,7 +19,7 @@ ACTION_TO_INDEX = {value: key for key, value in HIGH_LEVEL_ACTIONS.items()}
 DEFAULT_CONFIG: Dict[str, Any] = {
     "scenario_profile": "project_core",
     "num_aircraft": 45,
-    "num_total_aircraft": 75,
+    "num_total_aircraft": 45,
     "group_size": 20,  # Wave demand; retained name for CLI/config compatibility.
     "num_parking_spots": 45,
     "parking_base_transfer_time": 2.0,
@@ -104,7 +104,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 HAITIAN_2026_CONFIG: Dict[str, Any] = {
     "scenario_profile": "haitian_2026",
     "num_aircraft": 45,
-    "num_total_aircraft": 75,
+    "num_total_aircraft": 45,
     "group_size": 20,
     "num_parking_spots": 45,
     "num_launch_positions": 4,

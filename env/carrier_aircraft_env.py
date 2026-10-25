@@ -160,9 +160,10 @@ class CarrierAircraftSchedulingEnv:
         self.num_total_aircraft = int(
             self.config["num_total_aircraft"]
         )
-        if self.num_total_aircraft < self.num_aircraft:
+        if self.num_total_aircraft != self.num_aircraft:
             raise ValueError(
-                "num_total_aircraft must be at least num_aircraft"
+                "the fixed-fleet model requires num_total_aircraft "
+                "to equal num_aircraft"
             )
         self.group_size = int(self.config["group_size"])
         if self.num_aircraft < self.group_size * 2:
